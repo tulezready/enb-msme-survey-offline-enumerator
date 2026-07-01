@@ -271,28 +271,29 @@ function openDetail(id) {
   ]);
   sections += reviewBlockHTML('B. Employment', [
     ['Formally employed members', r.employment.numFormallyEmployed],
-    ['Employed members listed', r.employment.employedMembers.length],
-    ['Unemployed (qualified) listed', r.employment.unemployedMembers.length],
     ['Business status', statusLabel]
-  ]);
+  ], reviewSubList('Employed members', r.employment.employedMembers, fmtEmployed) + reviewSubList('Unemployed (qualified) members', r.employment.unemployedMembers, fmtUnemployed));
   if (status === 'formal') {
     sections += reviewBlockHTML('C. Business Background', [
       ['Business name', r.business.name], ['Date commenced', fmtDate(r.business.dateCommenced)],
       ['Owner', r.business.owner], ['IPA registered', r.business.ipaRegistered], ['Loan access', r.business.loanAccess]
-    ]);
+    ], reviewSubList('Registration forms', r.business.regForms, fmtRegForm) + reviewSubList('Licenses', r.business.licenses, fmtLicense) + reviewSubList('Loans', r.business.loans, fmtLoan));
     sections += reviewBlockHTML('D. Development Assistance', [
       ['Training attended', r.development.trainingAttended],
       ['Assistance required', (r.development.assistanceRequired || []).join(', ') || '—']
-    ]);
+    ], reviewSubList('Training history', Object.entries(r.development.trainingHistory || {}), ([t, f]) => `${t}${f ? ' — Facilitator: ' + f : ''}`));
     sections += reviewBlockHTML('E. Economic Output', [
       ['Casuals', r.economic.casualsCount], ['Permanent', r.economic.permanentCount],
       ['Turnover bracket', r.economic.turnoverBracket], ['Initial capital (K)', r.economic.initialCapital]
     ]);
   } else if (status === 'informal') {
-    sections += reviewBlockHTML('C.8 Loan', [['Loan access', r.business.loanAccess]]);
-    sections += reviewBlockHTML('G. Informal Sector', [['Entries listed', r.informal.entries.length]]);
+    sections += reviewBlockHTML('C.8 Loan', [['Loan access', r.business.loanAccess]], reviewSubList('Loans', r.business.loans, fmtLoan));
+    sections += reviewBlockHTML('G. Informal Sector', [], reviewSubList('Entries', r.informal.entries, fmtInformal));
   } else {
-    sections += reviewBlockHTML('F. Cash Crops', [['Comments', r.cashCrops.comments || '—']]);
+    const cropSummary = FIXED_CROPS.filter(c => r.cashCrops.fixed[c] && (r.cashCrops.fixed[c].blocks || r.cashCrops.fixed[c].trees))
+      .map(c => `${c}: ${r.cashCrops.fixed[c].blocks || 0} blocks / ${r.cashCrops.fixed[c].trees || 0} trees`);
+    sections += reviewBlockHTML('F. Cash Crops', [['Comments', r.cashCrops.comments || '—']],
+      reviewSubList('Fixed crops recorded', cropSummary, x => x) + reviewSubList('Other crops', r.cashCrops.others, fmtOtherCrop));
   }
 
   $('#detail-body').innerHTML = `
@@ -327,11 +328,27 @@ function openDetail(id) {
   $('#btn-detail-export').onclick = () => downloadFile(`msme-${(r.location.village||r.id).replace(/\s+/g,'-')}.json`, JSON.stringify(r, null, 2), 'application/json');
   $('#btn-detail-print').onclick = () => { window.print(); };
 }
-function reviewBlockHTML(title, pairs) {
+function reviewBlockHTML(title, pairs, extraHtml) {
   return `<div class="review-block card"><h4>${esc(title)}</h4>${
     pairs.map(([k, v]) => `<div class="review-line"><span class="k">${esc(k)}</span><span class="v">${esc(v === '' || v == null ? '—' : v)}</span></div>`).join('')
-  }</div>`;
+  }${extraHtml || ''}</div>`;
 }
+// Renders a labeled list of full entries (names + detail) under a review block —
+// used so the on-screen views show the same real detail as the CSV/JSON export.
+function reviewSubList(label, arr, fmt) {
+  if (!arr || arr.length === 0) return '';
+  return `<div style="margin-top:10px;">
+    <div style="font-size:11px; font-weight:700; color:var(--text-muted); text-transform:uppercase; letter-spacing:.04em; margin-bottom:5px;">${esc(label)}</div>
+    ${arr.map(item => `<div style="font-size:13px; padding:6px 0; border-bottom:1px dashed var(--border);">${esc(fmt(item))}</div>`).join('')}
+  </div>`;
+}
+const fmtEmployed = m => `${m.name || 'Unnamed'} — ${[m.qualification, m.institution, m.yearGraduated && 'Grad. ' + m.yearGraduated, m.employer, m.grossPay && 'K' + m.grossPay + '/mo'].filter(Boolean).join(', ') || 'no further detail'}`;
+const fmtUnemployed = m => `${m.name || 'Unnamed'} — ${[m.qualification, m.institution, m.yearGraduated && 'Grad. ' + m.yearGraduated, m.comments].filter(Boolean).join(', ') || 'no further detail'}`;
+const fmtRegForm = f => `${f.form || 'Form'} — Reg#: ${f.regNo || '—'}, Date: ${f.dateReg || '—'}, Expiry: ${f.expiry || '—'}`;
+const fmtLicense = l => `${l.type || 'License'} — Receipt: ${l.receiptNo || '—'}, Expiry: ${l.expiry || '—'}`;
+const fmtLoan = l => `${l.institution || 'Lender'} — K${l.amount || '—'}, Date: ${l.date || '—'}, On schedule: ${l.onSchedule || '—'}`;
+const fmtOtherCrop = c => `${c.name || 'Crop'} — ${c.blocks || 0} blocks, ${c.trees || 0} trees`;
+const fmtInformal = e => `${e.ownerName || 'Owner'} — ${e.activityType || 'activity'} (Est. ${e.yearEstablished || '—'}, K${e.monthlyTurnover || '—'}/mo)`;
 
 /* --------------------------------- wizard ---------------------------------- */
 function renderWizard() {
@@ -757,30 +774,30 @@ function renderStepReview(el) {
   ]);
   html += reviewBlockHTML('B. Employment', [
     ['Formally employed', draft.employment.numFormallyEmployed],
-    ['Employed members listed', draft.employment.employedMembers.length],
-    ['Unemployed (qualified) listed', draft.employment.unemployedMembers.length],
     ['Business status', status === 'formal' ? 'Formal business' : status === 'informal' ? 'Informal sector' : 'No business']
-  ]);
+  ], reviewSubList('Employed members', draft.employment.employedMembers, fmtEmployed) + reviewSubList('Unemployed (qualified) members', draft.employment.unemployedMembers, fmtUnemployed));
   if (status === 'formal') {
     html += reviewBlockHTML('C. Business Background', [
       ['Business name', draft.business.name], ['Owner', draft.business.owner],
-      ['IPA registered', draft.business.ipaRegistered], ['Licenses listed', draft.business.licenses.length],
+      ['IPA registered', draft.business.ipaRegistered],
       ['Loan access', draft.business.loanAccess]
-    ]);
+    ], reviewSubList('Registration forms', draft.business.regForms, fmtRegForm) + reviewSubList('Licenses', draft.business.licenses, fmtLicense) + reviewSubList('Loans', draft.business.loans, fmtLoan));
     html += reviewBlockHTML('D. Development', [
       ['Training attended', draft.development.trainingAttended],
       ['Assistance required', draft.development.assistanceRequired.join(', ') || '—']
-    ]);
+    ], reviewSubList('Training history', Object.entries(draft.development.trainingHistory || {}), ([t, f]) => `${t}${f ? ' — Facilitator: ' + f : ''}`));
     html += reviewBlockHTML('E. Economic Output', [
       ['Turnover bracket', draft.economic.turnoverBracket || '—'], ['Expenses bracket', draft.economic.expensesBracket || '—'],
       ['Initial capital (K)', draft.economic.initialCapital || '—']
     ]);
   } else if (status === 'informal') {
-    html += reviewBlockHTML('C.8 Loan', [['Loan access', draft.business.loanAccess || '—']]);
-    html += reviewBlockHTML('G. Informal Sector', [['Entries listed', draft.informal.entries.length]]);
+    html += reviewBlockHTML('C.8 Loan', [['Loan access', draft.business.loanAccess || '—']], reviewSubList('Loans', draft.business.loans, fmtLoan));
+    html += reviewBlockHTML('G. Informal Sector', [], reviewSubList('Entries', draft.informal.entries, fmtInformal));
   } else {
-    const cropSummary = FIXED_CROPS.filter(c => draft.cashCrops.fixed[c] && (draft.cashCrops.fixed[c].blocks || draft.cashCrops.fixed[c].trees)).join(', ');
-    html += reviewBlockHTML('F. Cash Crops', [['Crops recorded', cropSummary || 'None']]);
+    const cropSummary = FIXED_CROPS.filter(c => draft.cashCrops.fixed[c] && (draft.cashCrops.fixed[c].blocks || draft.cashCrops.fixed[c].trees))
+      .map(c => `${c}: ${draft.cashCrops.fixed[c].blocks || 0} blocks / ${draft.cashCrops.fixed[c].trees || 0} trees`);
+    html += reviewBlockHTML('F. Cash Crops', [['Comments', draft.cashCrops.comments || '—']],
+      reviewSubList('Fixed crops recorded', cropSummary, x => x) + reviewSubList('Other crops', draft.cashCrops.others, fmtOtherCrop));
   }
   el.innerHTML = html;
 }
@@ -821,29 +838,56 @@ $('#btn-export-csv').addEventListener('click', () => {
   toast('CSV exported');
 });
 
+// Turns an array of row-objects into one readable cell: "entry 1 | entry 2 | ..."
+function joinRows(arr, fmt) {
+  if (!arr || arr.length === 0) return '';
+  return arr.map(fmt).join(' | ');
+}
+
 function recordsToCSV(records) {
   const cols = [
     'id','createdAt','updatedAt','district','llg','village','ward','householdNo','dateCollected','contactPerson','mobile','postalAddress',
-    'numFormallyEmployed','employedMembersCount','unemployedMembersCount','businessStatus',
-    'businessActivities','businessName','dateCommenced','businessOwner','ipaRegistered','licenseTypes','loanAccess','loanReasons',
-    'trainingAttended','trainingRequired','assistanceRequired',
-    'casualsCount','permanentCount','turnoverBracket','turnoverAmount','expensesBracket','expensesAmount','initialCapital','assetsValue',
-    'cashCropsSummary','informalEntriesCount'
+    'numFormallyEmployed','employedMembersDetail','unemployedMembersDetail','businessStatus',
+    'businessActivities','businessName','dateCommenced','businessOwner','ipaRegistered',
+    'regFormsDetail','licensesDetail','loanAccess','loansDetail','loanReasons',
+    'trainingAttended','trainingHistoryDetail','trainingRequired','assistanceRequired','assistanceOtherSpecify',
+    'casualsCount','casualsYears','permanentCount','permanentYears','casualWageK','permanentWageK',
+    'turnoverBracket','turnoverAmount','expensesBracket','expensesAmount','initialCapital','assetsValue','otherInvestments','otherInvestmentsSpecify',
+    'cashCropsSummary','cashCropsOthersDetail','cashCropsComments','informalEntriesDetail','informalComments'
   ];
   const rows = records.map(r => {
     const allActivities = Object.values(r.business.activities).filter(v => Array.isArray(v)).flat();
     const cropSummary = FIXED_CROPS.filter(c => r.cashCrops.fixed[c] && (r.cashCrops.fixed[c].blocks || r.cashCrops.fixed[c].trees))
       .map(c => `${c}:${r.cashCrops.fixed[c].blocks||0}blk/${r.cashCrops.fixed[c].trees||0}tr`).join('; ');
+
+    const employedDetail = joinRows(r.employment.employedMembers, m =>
+      `${m.name || 'Unnamed'} (${[m.qualification, m.institution, m.yearGraduated && 'Grad. ' + m.yearGraduated, m.employer, m.grossPay && 'K' + m.grossPay + '/mo'].filter(Boolean).join(', ')})`);
+    const unemployedDetail = joinRows(r.employment.unemployedMembers, m =>
+      `${m.name || 'Unnamed'} (${[m.qualification, m.institution, m.yearGraduated && 'Grad. ' + m.yearGraduated, m.comments].filter(Boolean).join(', ')})`);
+    const regFormsDetail = joinRows(r.business.regForms, f =>
+      `${f.form || 'Form'} (Reg#: ${f.regNo || '—'}, Date: ${f.dateReg || '—'}, Expiry: ${f.expiry || '—'})`);
+    const licensesDetail = joinRows(r.business.licenses, l =>
+      `${l.type || 'License'} (Receipt: ${l.receiptNo || '—'}, Expiry: ${l.expiry || '—'})`);
+    const loansDetail = joinRows(r.business.loans, l =>
+      `${l.institution || 'Lender'} (K${l.amount || '—'}, Date: ${l.date || '—'}, On schedule: ${l.onSchedule || '—'})`);
+    const trainingHistoryDetail = joinRows(Object.entries(r.development.trainingHistory || {}), ([type, facilitator]) =>
+      `${type}${facilitator ? ' (Facilitator: ' + facilitator + ')' : ''}`);
+    const cashCropsOthersDetail = joinRows(r.cashCrops.others, c =>
+      `${c.name || 'Crop'} (${c.blocks || 0} blocks, ${c.trees || 0} trees)`);
+    const informalDetail = joinRows(r.informal.entries, e =>
+      `${e.ownerName || 'Owner'} — ${e.activityType || 'activity'} (Est. ${e.yearEstablished || '—'}, K${e.monthlyTurnover || '—'}/mo)`);
+
     return [
       r.id, r.createdAt, r.updatedAt, r.location.district, r.location.llg, r.location.village, r.location.ward, r.location.householdNo,
       r.location.dateCollected, r.location.contactPerson, r.location.mobile, r.location.postalAddress,
-      r.employment.numFormallyEmployed, r.employment.employedMembers.length, r.employment.unemployedMembers.length, r.businessStatus,
+      r.employment.numFormallyEmployed, employedDetail, unemployedDetail, r.businessStatus,
       allActivities.join('; '), r.business.name, r.business.dateCommenced, r.business.owner, r.business.ipaRegistered,
-      r.business.licenses.map(l => l.type).join('; '), r.business.loanAccess, r.business.loanReasons,
-      r.development.trainingAttended, r.development.trainingTypesRequired.join('; '), r.development.assistanceRequired.join('; '),
-      r.economic.casualsCount, r.economic.permanentCount, r.economic.turnoverBracket, r.economic.turnoverAmount,
-      r.economic.expensesBracket, r.economic.expensesAmount, r.economic.initialCapital, r.economic.assetsValue,
-      cropSummary, r.informal.entries.length
+      regFormsDetail, licensesDetail, r.business.loanAccess, loansDetail, r.business.loanReasons,
+      r.development.trainingAttended, trainingHistoryDetail, r.development.trainingTypesRequired.join('; '), r.development.assistanceRequired.join('; '), r.development.assistanceOtherSpecify,
+      r.economic.casualsCount, r.economic.casualsYears, r.economic.permanentCount, r.economic.permanentYears, r.economic.casualWageK, r.economic.permanentWageK,
+      r.economic.turnoverBracket, r.economic.turnoverAmount, r.economic.expensesBracket, r.economic.expensesAmount,
+      r.economic.initialCapital, r.economic.assetsValue, r.economic.otherInvestments, r.economic.otherInvestmentsSpecify,
+      cropSummary, cashCropsOthersDetail, r.cashCrops.comments, informalDetail, r.informal.comments
     ];
   });
   const escCsv = v => {
@@ -869,7 +913,16 @@ $('#import-file-input').addEventListener('change', (e) => {
   reader.onload = () => {
     try {
       const data = JSON.parse(reader.result);
-      const incoming = Array.isArray(data) ? data : (data.records || []);
+      let incoming;
+      if (Array.isArray(data)) {
+        incoming = data; // raw array of records
+      } else if (Array.isArray(data.records)) {
+        incoming = data.records; // bulk "Export all as JSON" shape: { records: [...] }
+      } else if (data && data.id && data.location) {
+        incoming = [data]; // a single record's own "Export" file (detail view)
+      } else {
+        incoming = [];
+      }
       if (!Array.isArray(incoming) || incoming.length === 0) throw new Error('No records found in file');
       let existing = loadRecords();
       const existingIds = new Set(existing.map(r => r.id));
