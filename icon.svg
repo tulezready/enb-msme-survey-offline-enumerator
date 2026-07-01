@@ -1,0 +1,5 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
+  <rect width="512" height="512" rx="96" fill="#8A4A05"/>
+  <circle cx="256" cy="256" r="168" fill="none" stroke="#1B4B43" stroke-width="14"/>
+  <text x="256" y="285" text-anchor="middle" font-family="Georgia, 'Times New Roman', serif" font-size="150" font-weight="700" fill="#FCEEDA">ENB</text>
+</svg>
