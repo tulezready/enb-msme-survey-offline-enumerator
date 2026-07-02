@@ -1,4 +1,4 @@
-const CACHE_NAME = 'msme-survey-enum-v5';
+const CACHE_NAME = 'msme-survey-enum-v6';
 const APP_SHELL = [
   './index.html',
   './app.js',
