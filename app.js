@@ -255,18 +255,16 @@ function renderRecordsList() {
 }
 $('#search-input').addEventListener('input', renderRecordsList);
 
-/* ------------------------------ records summary (HQ only) ------------------------------ */
-if (APP_ROLE === 'hq') {
-  $('#records-mode-toggle').style.display = 'flex';
-  $all('#records-mode-toggle .chip').forEach(btn => btn.addEventListener('click', () => {
-    $all('#records-mode-toggle .chip').forEach(b => b.classList.remove('active'));
-    btn.classList.add('active');
-    const mode = btn.dataset.mode;
-    $('#records-list-mode').hidden = (mode !== 'list');
-    $('#records-summary-mode').hidden = (mode !== 'summary');
-    if (mode === 'summary') renderRecordsSummary();
-  }));
-}
+/* ------------------------------ records summary (all roles) ------------------------------ */
+$('#records-mode-toggle').style.display = 'flex';
+$all('#records-mode-toggle .chip').forEach(btn => btn.addEventListener('click', () => {
+  $all('#records-mode-toggle .chip').forEach(b => b.classList.remove('active'));
+  btn.classList.add('active');
+  const mode = btn.dataset.mode;
+  $('#records-list-mode').hidden = (mode !== 'list');
+  $('#records-summary-mode').hidden = (mode !== 'summary');
+  if (mode === 'summary') renderRecordsSummary();
+}));
 
 function tallyEntries(tallyObj) {
   return Object.entries(tallyObj).filter(([, c]) => c > 0).sort((a, b) => b[1] - a[1]);

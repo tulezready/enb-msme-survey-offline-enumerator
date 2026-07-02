@@ -1,9 +1,10 @@
-const CACHE_NAME = 'msme-survey-enum-v3';
+const CACHE_NAME = 'msme-survey-enum-v5';
 const APP_SHELL = [
   './index.html',
   './app.js',
   './manifest.json',
-  './icon.svg'
+  './icon.svg',
+  './logo.svg'
 ];
 
 self.addEventListener('install', (event) => {
