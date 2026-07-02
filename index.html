@@ -363,14 +363,22 @@ input,select,textarea{font-family:inherit; font-size:15px;}
 </div>
 
 <div id="view-records" class="view" hidden>
-  <div class="search-bar">
-    <input type="text" id="search-input" placeholder="Search household, village, business name…">
+  <div class="filter-chips" id="records-mode-toggle" style="display:none;">
+    <button class="chip active" data-mode="list">📋 List</button>
+    <button class="chip" data-mode="summary">📊 Summary</button>
   </div>
-  <div class="filter-chips" id="district-chips"></div>
-  <div id="records-list-container"></div>
+  <div id="records-list-mode">
+    <div class="search-bar">
+      <input type="text" id="search-input" placeholder="Search household, village, business name…">
+    </div>
+    <div class="filter-chips" id="district-chips"></div>
+    <div id="records-list-container"></div>
+  </div>
+  <div id="records-summary-mode" hidden></div>
 </div>
 
 <div id="view-wizard" class="view" hidden>
+
   <div class="stepper" id="stepper"></div>
   <div id="wizard-body"></div>
 </div>

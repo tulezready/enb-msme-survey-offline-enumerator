@@ -255,6 +255,101 @@ function renderRecordsList() {
 }
 $('#search-input').addEventListener('input', renderRecordsList);
 
+/* ------------------------------ records summary (HQ only) ------------------------------ */
+if (APP_ROLE === 'hq') {
+  $('#records-mode-toggle').style.display = 'flex';
+  $all('#records-mode-toggle .chip').forEach(btn => btn.addEventListener('click', () => {
+    $all('#records-mode-toggle .chip').forEach(b => b.classList.remove('active'));
+    btn.classList.add('active');
+    const mode = btn.dataset.mode;
+    $('#records-list-mode').hidden = (mode !== 'list');
+    $('#records-summary-mode').hidden = (mode !== 'summary');
+    if (mode === 'summary') renderRecordsSummary();
+  }));
+}
+
+function tallyEntries(tallyObj) {
+  return Object.entries(tallyObj).filter(([, c]) => c > 0).sort((a, b) => b[1] - a[1]);
+}
+
+function renderRecordsSummary() {
+  const all = loadRecords();
+  const total = all.length;
+  const container = $('#records-summary-mode');
+  if (total === 0) {
+    container.innerHTML = `<div class="empty-state"><div class="icon">📊</div><p>No records on this device yet.<br>The summary fills in once records are collected or imported.</p></div>`;
+    return;
+  }
+
+  const byDistrict = {}; DISTRICTS.forEach(d => byDistrict[d] = 0);
+  const byStatus = { formal: 0, informal: 0, none: 0 };
+  let totalFormallyEmployed = 0, totalEmployedListed = 0, totalUnemployedListed = 0;
+  const activityTally = {};
+  let ipaYes = 0, ipaNo = 0, loanYes = 0, loanNo = 0, trainingYes = 0, trainingNo = 0;
+  const trainingReqTally = {}, assistanceTally = {};
+  const turnoverTally = {}; TURNOVER_BRACKETS.forEach(([c]) => turnoverTally[c] = 0);
+  const expensesTally = {}; EXPENSE_BRACKETS.forEach(([c]) => expensesTally[c] = 0);
+  const cropTotals = {}; FIXED_CROPS.forEach(c => cropTotals[c] = { blocks: 0, trees: 0 });
+  let informalEntryCount = 0;
+
+  all.forEach(r => {
+    if (r.location.district) byDistrict[r.location.district] = (byDistrict[r.location.district] || 0) + 1;
+    if (r.businessStatus === 'formal') byStatus.formal++;
+    else if (r.businessStatus === 'informal') byStatus.informal++;
+    else if (r.businessStatus === 'none') byStatus.none++;
+
+    totalFormallyEmployed += Number(r.employment.numFormallyEmployed) || 0;
+    totalEmployedListed += r.employment.employedMembers.length;
+    totalUnemployedListed += r.employment.unemployedMembers.length;
+
+    Object.values(r.business.activities).forEach(v => { if (Array.isArray(v)) v.forEach(item => { activityTally[item] = (activityTally[item] || 0) + 1; }); });
+    if (r.business.ipaRegistered === 'Yes') ipaYes++; else if (r.business.ipaRegistered === 'No') ipaNo++;
+    if (r.business.loanAccess === 'Yes') loanYes++; else if (r.business.loanAccess === 'No') loanNo++;
+    if (r.development.trainingAttended === 'Yes') trainingYes++; else if (r.development.trainingAttended === 'No') trainingNo++;
+    (r.development.trainingTypesRequired || []).forEach(t => { trainingReqTally[t] = (trainingReqTally[t] || 0) + 1; });
+    (r.development.assistanceRequired || []).forEach(t => { assistanceTally[t] = (assistanceTally[t] || 0) + 1; });
+    if (r.economic.turnoverBracket) turnoverTally[r.economic.turnoverBracket] = (turnoverTally[r.economic.turnoverBracket] || 0) + 1;
+    if (r.economic.expensesBracket) expensesTally[r.economic.expensesBracket] = (expensesTally[r.economic.expensesBracket] || 0) + 1;
+    FIXED_CROPS.forEach(c => { const d = r.cashCrops.fixed[c]; if (d) { cropTotals[c].blocks += Number(d.blocks) || 0; cropTotals[c].trees += Number(d.trees) || 0; } });
+    informalEntryCount += (r.informal.entries || []).length;
+  });
+
+  let html = `<div class="warn-box">Summary of all ${total} record(s) currently stored on this device — updates automatically as more surveys are collected or imported.</div>`;
+
+  html += reviewBlockHTML('Overview', [
+    ['Total households surveyed', total],
+    ['Formal business', byStatus.formal], ['Informal sector', byStatus.informal], ['No business', byStatus.none]
+  ]);
+  html += reviewBlockHTML('By District', DISTRICTS.map(d => [d, byDistrict[d]]));
+  html += reviewBlockHTML('B. Employment', [
+    ['Total formally employed (reported)', totalFormallyEmployed],
+    ['Employed members listed (Table 1)', totalEmployedListed],
+    ['Unemployed qualified members listed (Table 2)', totalUnemployedListed]
+  ]);
+  const topActivities = tallyEntries(activityTally).slice(0, 10);
+  if (topActivities.length) html += reviewBlockHTML('C. Top Business Activities', topActivities);
+  html += reviewBlockHTML('C. IPA Registration & Loans', [
+    ['IPA registered — Yes', ipaYes], ['IPA registered — No', ipaNo],
+    ['Loan access — Yes', loanYes], ['Loan access — No', loanNo]
+  ]);
+  html += reviewBlockHTML('D. Training & Development', [
+    ['Training attended — Yes', trainingYes], ['Training attended — No', trainingNo]
+  ]);
+  const trainingReqList = tallyEntries(trainingReqTally);
+  if (trainingReqList.length) html += reviewBlockHTML('Training Required (demand)', trainingReqList);
+  const assistanceList = tallyEntries(assistanceTally);
+  if (assistanceList.length) html += reviewBlockHTML('Assistance Required (demand)', assistanceList);
+  html += reviewBlockHTML('E. Monthly Turnover Bracket', TURNOVER_BRACKETS.map(([c, label]) => [label, turnoverTally[c] || 0]));
+  html += reviewBlockHTML('E. Monthly Expenses Bracket', EXPENSE_BRACKETS.map(([c, label]) => [label, expensesTally[c] || 0]));
+  html += reviewBlockHTML('F. Cash Crop Totals', FIXED_CROPS.map(c => [c, `${cropTotals[c].blocks} blocks / ${cropTotals[c].trees} trees`]));
+  html += reviewBlockHTML('G. Informal Sector', [['Total informal activities recorded', informalEntryCount]]);
+  html += `<button class="btn btn-outline btn-full" id="btn-print-summary">Print / Save as PDF</button>`;
+
+  container.innerHTML = html;
+  const printBtn = $('#btn-print-summary');
+  if (printBtn) printBtn.addEventListener('click', () => window.print());
+}
+
 /* -------------------------------- detail view ------------------------------- */
 function openDetail(id) {
   const r = recordsCache.find(x => x.id === id) || loadRecords().find(x => x.id === id);
