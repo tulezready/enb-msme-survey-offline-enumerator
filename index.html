@@ -365,8 +365,8 @@ body.locked .topbar, body.locked .bottomnav{ display:none; }
   <div class="brand">
     <div class="seal"><img src="logo.svg" alt="ENB Commerce & Industry logo"></div>
     <div class="brand-text">
-      <div class="t1">Division of Commerce &amp; Industry</div>
-      <div class="t2">Economic & MSME Survey</div>
+      <div class="t1">Commerce &amp; Industry</div>
+      <div class="t2">MSME Survey</div>
     </div>
   </div>
   <div class="offline-pill"><span class="dot" id="offline-dot"></span><span id="offline-status-text">Checking…</span> · <span id="record-count-pill">0</span></div>
@@ -427,9 +427,16 @@ body.locked .topbar, body.locked .bottomnav{ display:none; }
     </div>
   </div>
 
+  <div class="section-title">Upload to HQ</div>
+  <div class="card">
+    <p style="font-size:13.5px; color:var(--text-muted); margin-bottom:12px;">Push your new records straight into the shared database whenever you have signal — no file, no email, no USB. Already-uploaded records won't be sent again.</p>
+    <div class="review-line"><span class="k">Status</span><span class="v" id="upload-status">No records yet</span></div>
+    <button class="btn btn-primary btn-full" style="margin-top:12px;" id="btn-upload-hq">Upload to HQ</button>
+  </div>
+
   <div class="section-title">Send data to HQ</div>
   <div class="card">
-    <p style="font-size:13.5px; color:var(--text-muted); margin-bottom:12px;">Export everything collected on this device. Share the file by email, USB, or Bluetooth when you reach connectivity or a computer.</p>
+    <p style="font-size:13.5px; color:var(--text-muted); margin-bottom:12px;">Alternative to the upload above — export a file and share it manually by email, USB, or Bluetooth.</p>
     <button class="row-action" id="btn-export-json"><div class="icon">📤</div><div class="txt"><strong>Export all as JSON</strong><span>Full backup — for re-import into this app at HQ</span></div><div class="chev">›</div></button>
     <button class="row-action" id="btn-export-csv"><div class="icon">📊</div><div class="txt"><strong>Export all as CSV</strong><span>Open in Excel / Google Sheets</span></div><div class="chev">›</div></button>
   </div>
@@ -475,6 +482,7 @@ body.locked .topbar, body.locked .bottomnav{ display:none; }
   <button data-view="transfer"><span class="ic">🔄</span>Transfer</button>
 </div>
 
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
 <script src="app.js"></script>
 </body>
 </html>
