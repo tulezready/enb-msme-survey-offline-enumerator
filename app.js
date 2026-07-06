@@ -9,6 +9,35 @@ const VAULT_META_KEY = 'enb_msme_vault_meta_v1';
 const PBKDF2_ITERATIONS = 150000;
 const APP_ROLE = (document.body && document.body.dataset.role) || 'hq'; // 'hq' | 'enumerator'
 const DISTRICTS = ['Gazelle', 'Kokopo', 'Pomio', 'Rabaul'];
+const LLG_BY_DISTRICT = {
+  'Gazelle': ['Central Gazelle Rural', 'Inland Baining Rural', 'Lassul Baining Rural', 'Livuan Rural', 'Reimber Rural', 'Toma Rural', 'Vunadidir Rural'],
+  'Kokopo': ['Bitapaka Rural', 'Duke of York Rural', 'Kokopo-Vunamami Urban', 'Raluana Rural'],
+  'Pomio': ['Central/Inland Pomio Rural', 'East Pomio Rural', 'Melkoi Rural', 'Sinivit Rural', 'West Pomio-Mamusi Rural'],
+  'Rabaul': ['Balanataman Rural', 'Kombiu Rural', 'Rabaul Urban', 'Watom Island Rural']
+};
+function llgOptionsHTML(district, currentLlg) {
+  const list = LLG_BY_DISTRICT[district] || [];
+  let opts = `<option value="">${district ? 'Select LLG…' : 'Select district first'}</option>`;
+  opts += list.map(llg => `<option value="${esc(llg)}" ${llg === currentLlg ? 'selected' : ''}>${esc(llg)}</option>`).join('');
+  // Preserve an existing value that doesn't match the list (older records, imports) rather than silently wiping it
+  if (currentLlg && !list.includes(currentLlg)) {
+    opts += `<option value="${esc(currentLlg)}" selected>${esc(currentLlg)} (existing entry)</option>`;
+  }
+  return opts;
+}
+
+// Supabase project — used ONLY for the one-way "Upload to HQ" feature below.
+// This device has no login; the anon key here can only INSERT new records
+// (enforced by an insert-only RLS policy), never read, edit, or delete
+// anything already in the shared database.
+const SUPABASE_URL = 'https://lgfdzxcawggxrqvsgzpz.supabase.co';
+const SUPABASE_ANON_KEY = 'sb_publishable_cX_rXW51KpL-k9arZupk9w_6MS9Jlo_';
+// If the CDN library hasn't loaded yet (e.g. fresh install with no signal),
+// sb stays null — the whole app (survey wizard, dashboard, everything)
+// must keep working regardless. Only uploadToHQ() needs sb, and it checks.
+const sb = (typeof window.supabase !== 'undefined')
+  ? window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY)
+  : null;
 
 const BUSINESS_ACTIVITIES = {
   general: { label: 'Commerce & Services', items: ['Trade store','Wholesale','Fast food outlet','Second hand clothing shop','Liquor / Bottle shop','Bakery','Service station','PMV / Transport / Taxi services','Pest Control','Professional services (accountancy/consultancy)','Tailoring','Coffin Making','Mechanical Workshop','Contracting services','Communication Towers'] },
@@ -47,8 +76,9 @@ function stepsForStatus(status) {
 /* ---------------------------- crypto layer ----------------------------
    Records are encrypted at rest with AES-256-GCM. The key is derived from
    the device PIN via PBKDF2 and only ever kept in memory (cryptoKey) —
-   it is never written to storage. Nothing here ever leaves the device;
-   there's still no network call anywhere in this app. */
+   it is never written to storage. This device still does everything
+   fully offline; the only network call anywhere in this app is the
+   optional "Upload to HQ" button below, and only when you tap it. */
 let cryptoKey = null; // CryptoKey, set only after a correct PIN is entered this session
 
 function bytesToBase64(bytes) {
@@ -86,9 +116,8 @@ async function decryptJSON(key, envelope) {
 
 /* ---------------------------- storage layer ----------------------------
    recordsCache is the live, decrypted, in-memory source of truth for
-   everything the UI renders — it's kept in sync on every write, so all
-   existing synchronous reads throughout the app keep working unchanged.
-   persistRecords()/persistDraft() do the actual (async) encrypted write. */
+   everything the UI renders — kept in sync on every write, so all
+   existing synchronous reads throughout the app keep working unchanged. */
 function loadRecords() { return recordsCache; }
 function saveRecords(records) {
   recordsCache = records;
@@ -117,6 +146,52 @@ async function readDraft() {
 }
 function clearDraft() { localStorage.removeItem(DRAFT_KEY); }
 
+/* ---------------------------- upload to HQ ----------------------------
+   One-way, insert-only push to the shared database. No login needed —
+   the database policy only allows adding new rows, never reading, editing,
+   or deleting. Only records not yet uploaded (no syncedAt) are sent, and
+   only the ones that actually succeed get marked synced, so a dropped
+   connection midway just leaves the rest queued for next time. */
+function recordToRow(r) {
+  return {
+    id: r.id,
+    district: r.location.district || null,
+    llg: r.location.llg || null,
+    village: r.location.village || null,
+    ward: r.location.ward || null,
+    household_no: r.location.householdNo || null,
+    business_status: r.businessStatus || null,
+    date_collected: r.location.dateCollected || null,
+    data: r
+  };
+}
+async function uploadToHQ() {
+  if (!sb) { toast('Upload needs a connection at least once to set up — try again when online'); return; }
+  const all = loadRecords();
+  const pending = all.filter(r => !r.syncedAt);
+  if (pending.length === 0) { toast('Nothing new to upload'); return; }
+  const btn = $('#btn-upload-hq');
+  if (btn) { btn.disabled = true; btn.textContent = 'Uploading…'; }
+  let successCount = 0, failCount = 0;
+  const now = new Date().toISOString();
+  for (const r of pending) {
+    try {
+      const { error } = await sb.from('msme_records').insert(recordToRow(r));
+      if (error) throw error;
+      r.syncedAt = now;
+      successCount++;
+    } catch (err) {
+      console.error('Upload failed for', r.id, err);
+      failCount++;
+    }
+  }
+  await persistRecords(all); // save updated syncedAt flags back to this device's encrypted storage
+  renderTransfer();
+  if (btn) { btn.disabled = false; btn.textContent = 'Upload to HQ'; }
+  if (failCount === 0) toast(`Uploaded ${successCount} record(s) to HQ`);
+  else toast(`Uploaded ${successCount}, ${failCount} failed — check your connection and try again`);
+}
+
 function uid() {
   return 'r_' + Date.now().toString(36) + '_' + Math.random().toString(36).slice(2, 8);
 }
@@ -126,6 +201,7 @@ function newRecord() {
     id: uid(),
     createdAt: new Date().toISOString(),
     updatedAt: new Date().toISOString(),
+    syncedAt: null, // set once this record has been uploaded to HQ
     location: { district: '', llg: '', village: '', ward: '', householdNo: '', dateCollected: todayStr(), contactPerson: '', mobile: '', postalAddress: '' },
     employment: { numFormallyEmployed: '', employedMembers: [], unemployedMembers: [], comments: '' },
     businessStatus: '', // 'formal' | 'informal' | 'none'
@@ -273,9 +349,10 @@ function recordItemHTML(r) {
   const title = r.business.name || r.location.village || 'Household ' + (r.location.householdNo || '');
   const sub = [r.location.district, r.location.village].filter(Boolean).join(' · ') || 'No location set';
   const statusLabel = status === 'formal' ? 'Formal' : status === 'informal' ? 'Informal' : 'No business';
+  const syncNote = r.syncedAt ? '✓ Uploaded' : 'Not uploaded yet';
   return `<div class="record-item" data-id="${r.id}">
     <div class="badge ${status}">${esc(initials)}</div>
-    <div class="info"><strong>${esc(title)}</strong><span>${esc(sub)} · ${fmtDate(r.location.dateCollected)}</span></div>
+    <div class="info"><strong>${esc(title)}</strong><span>${esc(sub)} · ${fmtDate(r.location.dateCollected)} · ${syncNote}</span></div>
     <div class="status-tag ${status}">${statusLabel}</div>
   </div>`;
 }
@@ -471,7 +548,7 @@ function openDetail(id) {
   $('#btn-detail-back').onclick = () => switchView('records');
   $('#btn-detail-delete').onclick = () => {
     if (confirm('Delete this record from this device? This cannot be undone.')) {
-      recordsCache = loadRecords().filter(x => x.id !== r.id);
+      recordsCache = recordsCache.filter(x => x.id !== r.id);
       saveRecords(recordsCache);
       toast('Record deleted');
       switchView('records');
@@ -586,13 +663,17 @@ function renderStepA(el) {
   el.innerHTML = `
     <div class="field">
       <label>District</label>
-      <select data-bind="location.district">
+      <select data-bind="location.district" id="loc-district-select">
         <option value="">Select district…</option>
         ${DISTRICTS.map(d => `<option value="${d}">${d}</option>`).join('')}
       </select>
     </div>
     <div class="field-row">
-      <div class="field"><label>LLG</label><input type="text" data-bind="location.llg"></div>
+      <div class="field"><label>LLG</label>
+        <select data-bind="location.llg" id="loc-llg-select">
+          ${llgOptionsHTML(draft.location.district, draft.location.llg)}
+        </select>
+      </div>
       <div class="field"><label>Ward</label><input type="text" data-bind="location.ward"></div>
     </div>
     <div class="field"><label>Village</label><input type="text" data-bind="location.village"></div>
@@ -609,6 +690,10 @@ function renderStepA(el) {
     <div class="field"><label>Postal address</label><textarea data-bind="location.postalAddress"></textarea></div>
   `;
   bindInputs(el);
+  $('#loc-district-select').addEventListener('change', () => {
+    draft.location.llg = ''; // old LLG almost certainly doesn't belong to the newly picked district
+    $('#loc-llg-select').innerHTML = llgOptionsHTML(draft.location.district, draft.location.llg);
+  });
 }
 
 /* ---- Step B: Employment & Education + business status ---- */
@@ -975,9 +1060,28 @@ function renderTransfer() {
   $('#transfer-record-count').textContent = recordsCache.length;
   const bytes = new Blob([JSON.stringify(recordsCache)]).size;
   $('#transfer-storage-size').textContent = bytes > 1024 * 1024 ? (bytes / 1024 / 1024).toFixed(2) + ' MB' : Math.ceil(bytes / 1024) + ' KB';
+  const pendingCount = recordsCache.filter(r => !r.syncedAt).length;
+  const syncEl = $('#upload-status');
+  if (syncEl) {
+    syncEl.textContent = pendingCount === 0
+      ? (recordsCache.length === 0 ? 'No records yet' : 'All records uploaded to HQ')
+      : `${pendingCount} of ${recordsCache.length} record(s) not yet uploaded`;
+  }
 }
+$('#btn-upload-hq').addEventListener('click', uploadToHQ);
 $('#btn-lock-device').addEventListener('click', lockDevice);
 $('#btn-change-pin').addEventListener('click', changePin);
+$('#btn-clear-all').addEventListener('click', () => {
+  if (confirm('This will permanently erase ALL survey records on this device. Make sure you have exported and sent them to HQ first. Continue?')) {
+    if (confirm('Are you absolutely sure? This cannot be undone.')) {
+      saveRecords([]);
+      clearDraft();
+      recordsCache = [];
+      toast('All records erased');
+      renderTransfer();
+    }
+  }
+});
 $('#btn-export-json').addEventListener('click', () => {
   const all = loadRecords();
   if (all.length === 0) { toast('No records to export yet'); return; }
@@ -1065,6 +1169,7 @@ $('#import-file-input').addEventListener('change', (e) => {
   if (!file) return;
   const reader = new FileReader();
   reader.onload = () => {
+    const log = $('#import-log');
     try {
       const data = JSON.parse(reader.result);
       let incoming;
@@ -1078,8 +1183,8 @@ $('#import-file-input').addEventListener('change', (e) => {
         incoming = [];
       }
       if (!Array.isArray(incoming) || incoming.length === 0) throw new Error('No records found in file');
-      let existing = loadRecords();
-      const existingIds = new Set(existing.map(r => r.id));
+
+      let existing = loadRecords().slice();
       let added = 0, updated = 0;
       incoming.forEach(rec => {
         if (!rec.id) return;
@@ -1088,14 +1193,12 @@ $('#import-file-input').addEventListener('change', (e) => {
         else { existing.push(rec); added++; }
       });
       saveRecords(existing);
-      recordsCache = existing;
-      const log = $('#import-log');
+
       log.hidden = false;
       log.textContent = `Import complete.\n${added} new record(s) added.\n${updated} existing record(s) updated.\nTotal on device: ${existing.length}`;
       renderTransfer();
       toast('Import complete');
     } catch (err) {
-      const log = $('#import-log');
       log.hidden = false;
       log.textContent = 'Import failed: ' + err.message + '\nMake sure this is a JSON file exported from this app.';
     }
@@ -1104,17 +1207,6 @@ $('#import-file-input').addEventListener('change', (e) => {
   reader.readAsText(file);
 });
 
-$('#btn-clear-all').addEventListener('click', () => {
-  if (confirm('This will permanently erase ALL survey records on this device. Make sure you have exported and sent them to HQ first. Continue?')) {
-    if (confirm('Are you absolutely sure? This cannot be undone.')) {
-      saveRecords([]);
-      clearDraft();
-      recordsCache = [];
-      toast('All records erased');
-      renderTransfer();
-    }
-  }
-});
 
 /* ---------------------------- offline readiness --------------------------- */
 let offlineReady = false;
@@ -1276,7 +1368,6 @@ function initLockScreen() {
   const vaultMetaRaw = localStorage.getItem(VAULT_META_KEY);
   let legacyRecords = null;
   if (!vaultMetaRaw) {
-    // Device updated from a pre-PIN version — detect old plaintext records so setup can migrate them in, not discard them.
     try {
       const parsed = JSON.parse(localStorage.getItem(STORAGE_KEY));
       if (Array.isArray(parsed)) legacyRecords = parsed;
