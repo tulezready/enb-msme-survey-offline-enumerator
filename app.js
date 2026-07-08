@@ -343,11 +343,23 @@ function renderDashboard() {
   }
 }
 
+// Records are always named District, LLG, Ward, Household — in that order —
+// so they're easy to scan and locate regardless of business name (which may
+// not exist for informal/no-business households).
+function recordDisplayName(r) {
+  const parts = [];
+  if (r.location.district) parts.push(r.location.district);
+  if (r.location.llg) parts.push(r.location.llg);
+  if (r.location.ward) parts.push('Ward ' + r.location.ward);
+  if (r.location.householdNo) parts.push('HH ' + r.location.householdNo);
+  return parts.length ? parts.join(', ') : (r.business.name || 'Unnamed record');
+}
+
 function recordItemHTML(r) {
   const status = r.businessStatus || 'none';
   const initials = (r.location.village || r.location.district || '?').slice(0, 2).toUpperCase();
-  const title = r.business.name || r.location.village || 'Household ' + (r.location.householdNo || '');
-  const sub = [r.location.district, r.location.village].filter(Boolean).join(' · ') || 'No location set';
+  const title = recordDisplayName(r);
+  const sub = [r.location.village, r.business.name].filter(Boolean).join(' · ') || 'No further detail';
   const statusLabel = status === 'formal' ? 'Formal' : status === 'informal' ? 'Informal' : 'No business';
   const syncNote = r.syncedAt ? '✓ Uploaded' : 'Not uploaded yet';
   return `<div class="record-item" data-id="${r.id}">
@@ -529,8 +541,8 @@ function openDetail(id) {
     <div class="card" style="display:flex; align-items:center; gap:12px;">
       <div class="badge ${status}" style="width:46px;height:46px;font-size:16px;">${esc((r.location.village || 'HH').slice(0,2).toUpperCase())}</div>
       <div style="flex:1;">
-        <h3 style="margin-bottom:2px;">${esc(r.business.name || r.location.village || 'Household ' + (r.location.householdNo||''))}</h3>
-        <span style="font-size:12.5px; color:var(--text-muted);">${esc(r.location.district || '')} · Collected ${fmtDate(r.location.dateCollected)}</span>
+        <h3 style="margin-bottom:2px;">${esc(recordDisplayName(r))}</h3>
+        <span style="font-size:12.5px; color:var(--text-muted);">${esc([r.location.village, r.business.name].filter(Boolean).join(' · '))} · Collected ${fmtDate(r.location.dateCollected)}</span>
       </div>
     </div>
     <div class="card">
@@ -554,7 +566,7 @@ function openDetail(id) {
       switchView('records');
     }
   };
-  $('#btn-detail-export').onclick = () => downloadFile(`msme-${(r.location.village||r.id).replace(/\s+/g,'-')}.json`, JSON.stringify(r, null, 2), 'application/json');
+  $('#btn-detail-export').onclick = () => downloadFile(`msme-${recordDisplayName(r).replace(/[,\s]+/g,'-')}.json`, JSON.stringify(r, null, 2), 'application/json');
   $('#btn-detail-print').onclick = () => { window.print(); };
 }
 function reviewBlockHTML(title, pairs, extraHtml) {
@@ -1040,8 +1052,16 @@ function renderStepReview(el) {
 }
 
 function saveDraftRecord() {
-  if (!draft.location.district || !draft.location.village) {
-    if (!confirm('District and Village are not filled in. Save anyway?')) return;
+  const missing = [];
+  if (!draft.location.district) missing.push('District');
+  if (!draft.location.llg) missing.push('LLG');
+  if (!draft.location.village) missing.push('Village');
+  if (!draft.location.householdNo) missing.push('Household No.');
+  if (missing.length) {
+    toast(`Missing required field(s) in Section A: ${missing.join(', ')}`);
+    stepIndex = 0;
+    renderWizard();
+    return;
   }
   draft.updatedAt = new Date().toISOString();
   let all = loadRecords();
