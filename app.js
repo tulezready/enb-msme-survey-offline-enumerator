@@ -418,6 +418,19 @@ function tallyEntries(tallyObj) {
   return Object.entries(tallyObj).filter(([, c]) => c > 0).sort((a, b) => b[1] - a[1]);
 }
 
+function barBlockHTML(title, pairs, opts = {}) {
+  const max = Math.max(1, ...pairs.map(([, v]) => Number(v) || 0));
+  const rows = pairs.map(([label, value]) => {
+    const pct = Math.round(((Number(value) || 0) / max) * 100);
+    return `<div class="chart-row">
+      <div class="chart-label">${esc(label)}</div>
+      <div class="chart-track"><div class="chart-fill${opts.accent ? ' accent' : ''}" style="width:${pct}%"></div></div>
+      <div class="chart-value">${esc(value)}</div>
+    </div>`;
+  }).join('');
+  return `<div class="review-block card"><h4>${esc(title)}</h4>${rows}</div>`;
+}
+
 function renderRecordsSummary() {
   const all = loadRecords();
   const total = all.length;
@@ -460,34 +473,44 @@ function renderRecordsSummary() {
     informalEntryCount += (r.informal.entries || []).length;
   });
 
-  let html = `<div class="warn-box">Summary of all ${total} record(s) currently stored on this device — updates automatically as more surveys are collected or imported.</div>`;
+  const printHeader = `<div class="print-header"><div class="ph-row">
+    <div class="ph-seal"><img src="logo.svg" alt="ENB logo"></div>
+    <div>
+      <div class="ph-title">ENB Commerce &amp; Industry — MSME Survey Report</div>
+      <div class="ph-sub">Generated ${new Date().toLocaleDateString('en-GB', { day: '2-digit', month: 'long', year: 'numeric' })} · ${total} record(s)</div>
+    </div>
+  </div></div>`;
 
-  html += reviewBlockHTML('Overview', [
-    ['Total households surveyed', total],
-    ['Formal business', byStatus.formal], ['Informal sector', byStatus.informal], ['No business', byStatus.none]
-  ]);
-  html += reviewBlockHTML('By District', DISTRICTS.map(d => [d, byDistrict[d]]));
-  html += reviewBlockHTML('B. Employment', [
+  let html = printHeader + `<div class="warn-box">Summary of all ${total} record(s) currently stored on this device — updates automatically as more surveys are collected or imported.</div>`;
+
+  html += `<div class="stat-grid">
+    <div class="stat-card"><div class="num">${total}</div><div class="lbl">Total surveyed</div></div>
+    <div class="stat-card accent"><div class="num">${byStatus.formal}</div><div class="lbl">Formal business</div></div>
+    <div class="stat-card"><div class="num">${byStatus.informal}</div><div class="lbl">Informal sector</div></div>
+    <div class="stat-card"><div class="num">${byStatus.none}</div><div class="lbl">No business</div></div>
+  </div>`;
+  html += barBlockHTML('By District', DISTRICTS.map(d => [d, byDistrict[d]]));
+  html += barBlockHTML('B. Employment', [
     ['Total formally employed (reported)', totalFormallyEmployed],
     ['Employed members listed (Table 1)', totalEmployedListed],
     ['Unemployed qualified members listed (Table 2)', totalUnemployedListed]
   ]);
   const topActivities = tallyEntries(activityTally).slice(0, 10);
-  if (topActivities.length) html += reviewBlockHTML('C. Top Business Activities', topActivities);
-  html += reviewBlockHTML('C. IPA Registration & Loans', [
+  if (topActivities.length) html += barBlockHTML('C. Top Business Activities', topActivities);
+  html += barBlockHTML('C. IPA Registration & Loans', [
     ['IPA registered — Yes', ipaYes], ['IPA registered — No', ipaNo],
     ['Loan access — Yes', loanYes], ['Loan access — No', loanNo]
   ]);
-  html += reviewBlockHTML('D. Training & Development', [
+  html += barBlockHTML('D. Training & Development', [
     ['Training attended — Yes', trainingYes], ['Training attended — No', trainingNo]
   ]);
   const trainingReqList = tallyEntries(trainingReqTally);
-  if (trainingReqList.length) html += reviewBlockHTML('Training Required (demand)', trainingReqList);
+  if (trainingReqList.length) html += barBlockHTML('Training Required (demand)', trainingReqList, { accent: true });
   const assistanceList = tallyEntries(assistanceTally);
-  if (assistanceList.length) html += reviewBlockHTML('Assistance Required (demand)', assistanceList);
-  html += reviewBlockHTML('E. Monthly Turnover Bracket', TURNOVER_BRACKETS.map(([c, label]) => [label, turnoverTally[c] || 0]));
-  html += reviewBlockHTML('E. Monthly Expenses Bracket', EXPENSE_BRACKETS.map(([c, label]) => [label, expensesTally[c] || 0]));
-  html += reviewBlockHTML('F. Cash Crop Totals', FIXED_CROPS.map(c => [c, `${cropTotals[c].blocks} blocks / ${cropTotals[c].trees} trees`]));
+  if (assistanceList.length) html += barBlockHTML('Assistance Required (demand)', assistanceList, { accent: true });
+  html += barBlockHTML('E. Monthly Turnover Bracket', TURNOVER_BRACKETS.map(([c, label]) => [label, turnoverTally[c] || 0]));
+  html += barBlockHTML('E. Monthly Expenses Bracket', EXPENSE_BRACKETS.map(([c, label]) => [label, expensesTally[c] || 0]));
+  html += barBlockHTML('F. Cash Crop Totals (blocks)', FIXED_CROPS.map(c => [`${c} (${cropTotals[c].trees} trees)`, cropTotals[c].blocks]));
   html += reviewBlockHTML('G. Informal Sector', [['Total informal activities recorded', informalEntryCount]]);
   html += `<button class="btn btn-outline btn-full" id="btn-print-summary">Print / Save as PDF</button>`;
 
