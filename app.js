@@ -207,18 +207,31 @@ function recordToRow(r) {
 async function uploadToHQ() {
   if (!sb) { toast('Upload needs a connection at least once to set up — try again when online'); return; }
   const all = loadRecords();
-  const pending = all.filter(r => !r.syncedAt);
-  if (pending.length === 0) { toast('Nothing new to upload'); return; }
+  if (all.length === 0) { toast('No records to upload yet'); return; }
   const btn = $('#btn-upload-hq');
   if (btn) { btn.disabled = true; btn.textContent = 'Uploading…'; }
-  let successCount = 0, failCount = 0;
+  let sentCount = 0, alreadyCount = 0, failCount = 0;
   const now = new Date().toISOString();
-  for (const r of pending) {
+  // Every record is attempted on every tap — not just ones never marked synced.
+  // If HQ still has it, the insert hits a duplicate-ID conflict and is treated
+  // as a harmless no-op. If HQ deleted it, there's no conflict, so it goes
+  // straight back in. This is what makes "HQ decides, just re-tap to resync" work,
+  // without giving this device any ability to read, edit, or delete anything.
+  for (const r of all) {
     try {
       const { error } = await sb.from('msme_records').insert(recordToRow(r));
-      if (error) throw error;
-      r.syncedAt = now;
-      successCount++;
+      if (error) {
+        const isDuplicate = error.code === '23505' || /duplicate key/i.test(error.message || '');
+        if (isDuplicate) {
+          alreadyCount++;
+          if (!r.syncedAt) r.syncedAt = now;
+        } else {
+          throw error;
+        }
+      } else {
+        r.syncedAt = now;
+        sentCount++;
+      }
     } catch (err) {
       console.error('Upload failed for', r.id, err);
       failCount++;
@@ -227,8 +240,11 @@ async function uploadToHQ() {
   await persistRecords(all); // save updated syncedAt flags back to this device's encrypted storage
   renderTransfer();
   if (btn) { btn.disabled = false; btn.textContent = 'Upload to HQ'; }
-  if (failCount === 0) toast(`Uploaded ${successCount} record(s) to HQ`);
-  else toast(`Uploaded ${successCount}, ${failCount} failed — check your connection and try again`);
+  const parts = [];
+  if (sentCount) parts.push(`${sentCount} sent`);
+  if (alreadyCount) parts.push(`${alreadyCount} already at HQ`);
+  if (failCount) parts.push(`${failCount} failed`);
+  toast(parts.length ? parts.join(' · ') : 'Nothing to upload');
 }
 
 function uid() {
