@@ -470,6 +470,96 @@ function barBlockHTML(title, pairs, opts = {}) {
   return `<div class="review-block card"><h4>${esc(title)}</h4>${rows}</div>`;
 }
 
+function donutChartHTML(title, segments) {
+  const total = segments.reduce((s, seg) => s + (Number(seg.value) || 0), 0) || 1;
+  let cursor = 0;
+  const stops = segments.map(seg => {
+    const pct = (Number(seg.value) || 0) / total * 100;
+    const start = cursor;
+    cursor += pct;
+    return `${seg.color} ${start}% ${cursor}%`;
+  }).join(', ');
+  const legend = segments.map(seg => {
+    const pct = Math.round((Number(seg.value) || 0) / total * 100);
+    return `<div class="donut-legend-row"><span class="donut-swatch" style="background:${seg.color}"></span>${esc(seg.label)} — ${seg.value} (${pct}%)</div>`;
+  }).join('');
+  return `<div class="review-block card"><h4>${esc(title)}</h4>
+    <div class="donut-wrap">
+      <div class="donut" style="background:conic-gradient(${stops})"><div class="donut-hole"><div class="donut-total">${total}</div><div class="donut-total-label">Total</div></div></div>
+      <div class="donut-legend">${legend}</div>
+    </div>
+  </div>`;
+}
+
+function stackedBarBlockHTML(title, rowsData) {
+  const rows = rowsData.map(d => {
+    const total = d.formal + d.informal + d.none;
+    const fPct = total ? Math.round(d.formal / total * 100) : 0;
+    const iPct = total ? Math.round(d.informal / total * 100) : 0;
+    const nPct = total ? Math.max(0, 100 - fPct - iPct) : 0;
+    return `<div class="chart-row">
+      <div class="chart-label">${esc(d.label)}</div>
+      <div class="chart-track stacked-track">
+        <div class="stacked-seg formal" style="width:${fPct}%"></div>
+        <div class="stacked-seg informal" style="width:${iPct}%"></div>
+        <div class="stacked-seg none" style="width:${nPct}%"></div>
+      </div>
+      <div class="chart-value">${total}</div>
+    </div>`;
+  }).join('');
+  const legend = `<div class="stacked-legend">
+    <span><i class="dot formal"></i>Formal</span>
+    <span><i class="dot informal"></i>Informal</span>
+    <span><i class="dot none"></i>No business</span>
+  </div>`;
+  return `<div class="review-block card"><h4>${esc(title)}</h4>${rows}${legend}</div>`;
+}
+
+function computeWeeklyTrend(records, weeksBack = 8) {
+  const now = new Date();
+  const todayDow = now.getDay();
+  const buckets = [];
+  for (let i = weeksBack - 1; i >= 0; i--) {
+    const weekStart = new Date(now);
+    weekStart.setHours(0, 0, 0, 0);
+    weekStart.setDate(now.getDate() - todayDow - (i * 7));
+    const weekEnd = new Date(weekStart);
+    weekEnd.setDate(weekStart.getDate() + 7);
+    buckets.push({ start: weekStart, end: weekEnd, count: 0, label: `${weekStart.getMonth() + 1}/${weekStart.getDate()}` });
+  }
+  records.forEach(r => {
+    const raw = r.location && r.location.dateCollected;
+    if (!raw) return;
+    const d = new Date(raw);
+    if (isNaN(d)) return;
+    const bucket = buckets.find(b => d >= b.start && d < b.end);
+    if (bucket) bucket.count++;
+  });
+  return buckets;
+}
+
+function trendChartHTML(title, buckets) {
+  const max = Math.max(1, ...buckets.map(b => b.count));
+  const w = 600, h = 150, pad = 26;
+  const stepX = buckets.length > 1 ? (w - pad * 2) / (buckets.length - 1) : 0;
+  const coords = buckets.map((b, i) => ({
+    x: pad + i * stepX,
+    y: h - pad - ((b.count / max) * (h - pad * 2)),
+  }));
+  const points = coords.map(c => `${c.x},${c.y}`).join(' ');
+  const areaPoints = `${pad},${h - pad} ${points} ${w - pad},${h - pad}`;
+  const dots = coords.map(c => `<circle cx="${c.x}" cy="${c.y}" r="3.5" fill="#153F38"></circle>`).join('');
+  const labels = buckets.map((b, i) => `<text x="${coords[i].x}" y="${h - 6}" font-size="10" fill="#6B6259" text-anchor="middle">${esc(b.label)}</text>`).join('');
+  return `<div class="review-block card"><h4>${esc(title)}</h4>
+    <svg viewBox="0 0 ${w} ${h}" style="width:100%; height:auto; display:block;">
+      <polygon points="${areaPoints}" fill="#15423820"></polygon>
+      <polyline points="${points}" fill="none" stroke="#153F38" stroke-width="2.5"></polyline>
+      ${dots}
+      ${labels}
+    </svg>
+  </div>`;
+}
+
 function renderRecordsSummary() {
   const all = loadRecords();
   const total = all.length;
@@ -480,6 +570,7 @@ function renderRecordsSummary() {
   }
 
   const byDistrict = {}; DISTRICTS.forEach(d => byDistrict[d] = 0);
+  const byDistrictStatus = {}; DISTRICTS.forEach(d => byDistrictStatus[d] = { formal: 0, informal: 0, none: 0 });
   const byStatus = { formal: 0, informal: 0, none: 0 };
   let totalFormallyEmployed = 0, totalEmployedListed = 0, totalUnemployedListed = 0;
   const activityTally = {};
@@ -495,6 +586,9 @@ function renderRecordsSummary() {
     if (r.businessStatus === 'formal') byStatus.formal++;
     else if (r.businessStatus === 'informal') byStatus.informal++;
     else if (r.businessStatus === 'none') byStatus.none++;
+    if (r.location.district && byDistrictStatus[r.location.district] && ['formal', 'informal', 'none'].includes(r.businessStatus)) {
+      byDistrictStatus[r.location.district][r.businessStatus]++;
+    }
 
     totalFormallyEmployed += Number(r.employment.numFormallyEmployed) || 0;
     totalEmployedListed += r.employment.employedMembers.length;
@@ -528,7 +622,13 @@ function renderRecordsSummary() {
     <div class="stat-card"><div class="num">${byStatus.informal}</div><div class="lbl">Informal sector</div></div>
     <div class="stat-card"><div class="num">${byStatus.none}</div><div class="lbl">No business</div></div>
   </div>`;
-  html += barBlockHTML('By District', DISTRICTS.map(d => [d, byDistrict[d]]));
+  html += donutChartHTML('Business Status Split', [
+    { label: 'Formal', value: byStatus.formal, color: '#153F38' },
+    { label: 'Informal', value: byStatus.informal, color: '#D97706' },
+    { label: 'No business', value: byStatus.none, color: '#B9B2A6' }
+  ]);
+  html += trendChartHTML('Surveys Collected — Last 8 Weeks', computeWeeklyTrend(all, 8));
+  html += stackedBarBlockHTML('By District (composition)', DISTRICTS.map(d => ({ label: d, ...byDistrictStatus[d] })));
   html += barBlockHTML('B. Employment', [
     ['Total formally employed (reported)', totalFormallyEmployed],
     ['Employed members listed (Table 1)', totalEmployedListed],
