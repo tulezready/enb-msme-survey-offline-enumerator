@@ -204,20 +204,21 @@ function recordToRow(r) {
     data: r
   };
 }
-async function uploadToHQ() {
+async function runUpload(records, label) {
   if (!sb) { toast('Upload needs a connection at least once to set up — try again when online'); return; }
-  const all = loadRecords();
-  if (all.length === 0) { toast('No records to upload yet'); return; }
+  if (records.length === 0) { toast('Nothing to upload'); return; }
   const btn = $('#btn-upload-hq');
-  if (btn) { btn.disabled = true; btn.textContent = 'Uploading…'; }
+  const resyncBtn = $('#btn-resync-hq');
+  if (btn) btn.disabled = true;
+  if (resyncBtn) resyncBtn.disabled = true;
+  if (btn) btn.textContent = label;
   let sentCount = 0, alreadyCount = 0, failCount = 0;
   const now = new Date().toISOString();
-  // Every record is attempted on every tap — not just ones never marked synced.
-  // If HQ still has it, the insert hits a duplicate-ID conflict and is treated
-  // as a harmless no-op. If HQ deleted it, there's no conflict, so it goes
-  // straight back in. This is what makes "HQ decides, just re-tap to resync" work,
-  // without giving this device any ability to read, edit, or delete anything.
-  for (const r of all) {
+  // Duplicate-ID conflict = HQ still has it (harmless no-op). No conflict =
+  // either genuinely new, or HQ deleted it and it just went back in — either
+  // way that's a legitimate "sent". This device can only ever add rows,
+  // never read, edit, or delete anything already in the shared database.
+  for (const r of records) {
     try {
       const { error } = await sb.from('msme_records').insert(recordToRow(r));
       if (error) {
@@ -237,14 +238,30 @@ async function uploadToHQ() {
       failCount++;
     }
   }
-  await persistRecords(all); // save updated syncedAt flags back to this device's encrypted storage
+  await persistRecords(loadRecords()); // save updated syncedAt flags back to this device's encrypted storage
   renderTransfer();
   if (btn) { btn.disabled = false; btn.textContent = 'Upload to HQ'; }
+  if (resyncBtn) { resyncBtn.disabled = false; resyncBtn.textContent = 'Resync all with HQ'; }
   const parts = [];
   if (sentCount) parts.push(`${sentCount} sent`);
   if (alreadyCount) parts.push(`${alreadyCount} already at HQ`);
   if (failCount) parts.push(`${failCount} failed`);
   toast(parts.length ? parts.join(' · ') : 'Nothing to upload');
+}
+
+// Default, fast path — only records never confirmed sent. This is what keeps
+// "Upload to HQ" quick even once a device has hundreds of synced records
+// behind it, rather than re-attempting every single one on every tap.
+function uploadToHQ() {
+  const pending = loadRecords().filter(r => !r.syncedAt);
+  runUpload(pending, 'Uploading…');
+}
+
+// Deliberate, occasional action — re-attempts every local record, including
+// already-synced ones, so a record HQ deleted can come back. Slower on a
+// device with a lot of history, which is exactly why it isn't the default.
+function resyncAllWithHQ() {
+  runUpload(loadRecords(), 'Resyncing…');
 }
 
 function uid() {
@@ -315,8 +332,18 @@ function fmtDate(iso) {
 }
 
 /* ------------------------------ navigation ------------------------------- */
+let autosaveInterval = null;
+function startAutosaveInterval() {
+  stopAutosaveInterval();
+  autosaveInterval = setInterval(() => { if (draft) saveDraft(draft); }, 4000);
+}
+function stopAutosaveInterval() {
+  if (autosaveInterval) { clearInterval(autosaveInterval); autosaveInterval = null; }
+}
+
 function switchView(view) {
   currentView = view;
+  if (view !== 'wizard') stopAutosaveInterval();
   ['dashboard', 'records', 'wizard', 'detail', 'transfer'].forEach(v => {
     $('#view-' + v).hidden = (v !== view);
   });
@@ -348,6 +375,7 @@ async function startNewSurvey() {
       stepIndex = 0;
       switchView('wizard');
       renderWizard();
+      startAutosaveInterval();
       return;
     } else {
       clearDraft();
@@ -358,6 +386,7 @@ async function startNewSurvey() {
   stepIndex = 0;
   switchView('wizard');
   renderWizard();
+  startAutosaveInterval();
 }
 
 function editRecord(id) {
@@ -368,6 +397,7 @@ function editRecord(id) {
   stepIndex = 0;
   switchView('wizard');
   renderWizard();
+  startAutosaveInterval();
 }
 
 /* ------------------------------- dashboard -------------------------------- */
@@ -425,6 +455,7 @@ function recordItemHTML(r) {
 }
 
 /* ------------------------------- records list ------------------------------ */
+const RECORDS_PAGE_SIZE = 50;
 function renderRecordsList() {
   recordsCache = loadRecords();
   const chipsEl = $('#district-chips');
@@ -448,15 +479,35 @@ function renderRecordsList() {
   }
   list = [...list].sort((a, b) => new Date(b.updatedAt) - new Date(a.updatedAt));
 
+  if (renderRecordsList._resetPage !== false) renderRecordsList._page = 1;
+  renderRecordsList._resetPage = true;
+  const page = renderRecordsList._page || 1;
+  const visibleCount = Math.min(list.length, page * RECORDS_PAGE_SIZE);
+  const visible = list.slice(0, visibleCount);
+
   const container = $('#records-list-container');
   if (list.length === 0) {
     container.innerHTML = `<div class="empty-state"><div class="icon">🔍</div><p>No matching records.</p></div>`;
   } else {
-    container.innerHTML = list.map(recordItemHTML).join('');
+    let html = visible.map(recordItemHTML).join('');
+    if (visibleCount < list.length) {
+      html += `<button class="btn btn-outline btn-full" id="btn-load-more-records">Load more (${list.length - visibleCount} remaining)</button>`;
+    }
+    container.innerHTML = html;
     $all('.record-item', container).forEach(el => el.addEventListener('click', () => openDetail(el.dataset.id)));
+    const loadMoreBtn = $('#btn-load-more-records');
+    if (loadMoreBtn) loadMoreBtn.addEventListener('click', () => {
+      renderRecordsList._page = page + 1;
+      renderRecordsList._resetPage = false;
+      renderRecordsList();
+    });
   }
 }
-$('#search-input').addEventListener('input', renderRecordsList);
+let searchDebounceTimer = null;
+$('#search-input').addEventListener('input', () => {
+  clearTimeout(searchDebounceTimer);
+  searchDebounceTimer = setTimeout(renderRecordsList, 200);
+});
 
 /* ------------------------------ records summary (all roles) ------------------------------ */
 $('#records-mode-toggle').style.display = 'flex';
@@ -1251,6 +1302,11 @@ function saveDraftRecord() {
     renderWizard();
     return;
   }
+  const dup = findDuplicateRecord(draft);
+  if (dup) {
+    const proceed = confirm(`A record for Household No. ${draft.location.householdNo} in ${draft.location.llg} (Ward ${draft.location.ward || '—'}) already exists — collected ${fmtDate(dup.location.dateCollected)}. Save this as a separate entry anyway?`);
+    if (!proceed) return;
+  }
   draft.updatedAt = new Date().toISOString();
   let all = loadRecords();
   const idx = all.findIndex(r => r.id === draft.id);
@@ -1258,8 +1314,18 @@ function saveDraftRecord() {
   saveRecords(all);
   recordsCache = all;
   clearDraft();
+  stopAutosaveInterval();
   toast(editingExisting ? 'Record updated' : 'Record saved to this device');
   switchView('dashboard');
+}
+
+function findDuplicateRecord(rec) {
+  return recordsCache.find(r => r.id !== rec.id &&
+    r.location.district === rec.location.district &&
+    r.location.llg === rec.location.llg &&
+    r.location.ward === rec.location.ward &&
+    r.location.householdNo === rec.location.householdNo &&
+    r.location.householdNo);
 }
 
 /* -------------------------------- transfer -------------------------------- */
@@ -1277,6 +1343,7 @@ function renderTransfer() {
   }
 }
 $('#btn-upload-hq').addEventListener('click', uploadToHQ);
+$('#btn-resync-hq').addEventListener('click', resyncAllWithHQ);
 $('#btn-lock-device').addEventListener('click', lockDevice);
 $('#btn-change-pin').addEventListener('click', changePin);
 $('#btn-clear-all').addEventListener('click', () => {
@@ -1481,6 +1548,9 @@ function renderUnlockForm() {
   $('#pin-unlock').addEventListener('keydown', (e) => { if (e.key === 'Enter') submit(); });
   $('#btn-forgot-pin').addEventListener('click', handleForgotPin);
   setTimeout(() => { const el = $('#pin-unlock'); if (el) el.focus(); }, 50);
+  const state = getPinFailState();
+  const remaining = state.lockUntil - Date.now();
+  if (remaining > 0) showLockError(`Too many incorrect attempts. Try again in ${Math.ceil(remaining / 1000)}s.`);
 }
 
 async function handleSetup(pin, confirmPin, legacyRecords) {
@@ -1496,7 +1566,23 @@ async function handleSetup(pin, confirmPin, legacyRecords) {
   finishUnlock();
 }
 
+const PIN_FAIL_KEY = 'enb_msme_pin_fails_v1';
+const PIN_FAIL_THRESHOLD = 5;
+const PIN_LOCKOUT_MS = 30000;
+function getPinFailState() {
+  try { return JSON.parse(localStorage.getItem(PIN_FAIL_KEY)) || { count: 0, lockUntil: 0 }; }
+  catch (e) { return { count: 0, lockUntil: 0 }; }
+}
+function setPinFailState(state) { localStorage.setItem(PIN_FAIL_KEY, JSON.stringify(state)); }
+function clearPinFailState() { localStorage.removeItem(PIN_FAIL_KEY); }
+
 async function handleUnlock(pin) {
+  const state = getPinFailState();
+  const now = Date.now();
+  if (state.lockUntil > now) {
+    showLockError(`Too many incorrect attempts. Try again in ${Math.ceil((state.lockUntil - now) / 1000)}s.`);
+    return;
+  }
   if (!pin) { showLockError('Enter your PIN.'); return; }
   let meta;
   try { meta = JSON.parse(localStorage.getItem(VAULT_META_KEY)); } catch (e) { meta = null; }
@@ -1504,7 +1590,18 @@ async function handleUnlock(pin) {
   showLockError('');
   cryptoKey = await deriveKey(pin, meta.salt, meta.iterations);
   const ok = await attemptUnlockWithKey();
-  if (!ok) showLockError('Incorrect PIN. Try again.');
+  if (ok) {
+    clearPinFailState();
+  } else {
+    const newCount = (state.count || 0) + 1;
+    if (newCount >= PIN_FAIL_THRESHOLD) {
+      setPinFailState({ count: 0, lockUntil: Date.now() + PIN_LOCKOUT_MS });
+      showLockError(`Too many incorrect attempts. Try again in ${Math.ceil(PIN_LOCKOUT_MS / 1000)}s.`);
+    } else {
+      setPinFailState({ count: newCount, lockUntil: 0 });
+      showLockError(`Incorrect PIN. ${PIN_FAIL_THRESHOLD - newCount} attempt(s) left before a short lockout.`);
+    }
+  }
 }
 
 async function attemptUnlockWithKey() {
@@ -1531,6 +1628,7 @@ function handleForgotPin() {
   localStorage.removeItem(VAULT_META_KEY);
   localStorage.removeItem(STORAGE_KEY);
   localStorage.removeItem(DRAFT_KEY);
+  clearPinFailState();
   cryptoKey = null;
   recordsCache = [];
   initLockScreen();

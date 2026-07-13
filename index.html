@@ -406,8 +406,8 @@ body.locked .topbar, body.locked .bottomnav{ display:none; }
   <div class="brand">
     <div class="seal"><img src="logo.svg" alt="ENB Commerce & Industry logo"></div>
     <div class="brand-text">
-      <div class="t1">Division of Commerce &amp; Industry</div>
-      <div class="t2">Economic & MSME Survey</div>
+      <div class="t1">Commerce &amp; Industry</div>
+      <div class="t2">MSME Survey</div>
     </div>
   </div>
   <div class="offline-pill"><span class="dot" id="offline-dot"></span><span id="offline-status-text">Checking…</span> · <span id="record-count-pill">0</span></div>
@@ -473,6 +473,8 @@ body.locked .topbar, body.locked .bottomnav{ display:none; }
     <p style="font-size:13.5px; color:var(--text-muted); margin-bottom:12px;">Push your new records straight into the shared database whenever you have signal — no file, no email, no USB. Already-uploaded records won't be sent again.</p>
     <div class="review-line"><span class="k">Status</span><span class="v" id="upload-status">No records yet</span></div>
     <button class="btn btn-primary btn-full" style="margin-top:12px;" id="btn-upload-hq">Upload to HQ</button>
+    <button class="btn btn-outline btn-full" style="margin-top:8px;" id="btn-resync-hq">Resync all with HQ</button>
+    <p class="hint" style="margin-top:8px;">Only use Resync if HQ says a record you already sent is missing — it re-checks everything on this device, so it's slower than the regular upload above.</p>
   </div>
 
   <div class="section-title">Send data to HQ</div>
