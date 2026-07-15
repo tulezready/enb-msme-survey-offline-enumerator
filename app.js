@@ -153,20 +153,102 @@ async function decryptJSON(key, envelope) {
   return JSON.parse(new TextDecoder().decode(ptBuf));
 }
 
+/* ---------------------------- IndexedDB layer ----------------------------
+   Records live in IndexedDB now, not localStorage — one entry per record,
+   not one giant blob. IndexedDB's quota is in the hundreds of MB to low GB
+   (tied to device disk space), versus localStorage's fixed ~5-10MB per
+   origin. Storing per-record also means saving one household only ever
+   encrypts and writes that one record, not the entire dataset — so save
+   time stays roughly constant instead of growing as the device fills up. */
+const IDB_NAME = 'enb_msme_db_v1';
+const IDB_STORE = 'records';
+let idbPromise = null;
+function openIDB() {
+  if (idbPromise) return idbPromise;
+  idbPromise = new Promise((resolve, reject) => {
+    const req = indexedDB.open(IDB_NAME, 1);
+    req.onupgradeneeded = (e) => {
+      const db = e.target.result;
+      if (!db.objectStoreNames.contains(IDB_STORE)) db.createObjectStore(IDB_STORE, { keyPath: 'id' });
+    };
+    req.onsuccess = () => resolve(req.result);
+    req.onerror = () => reject(req.error);
+  });
+  return idbPromise;
+}
+function idbPut(entry) {
+  return openIDB().then(db => new Promise((resolve, reject) => {
+    const tx = db.transaction(IDB_STORE, 'readwrite');
+    tx.objectStore(IDB_STORE).put(entry);
+    tx.oncomplete = () => resolve();
+    tx.onerror = () => reject(tx.error);
+  }));
+}
+function idbDelete(id) {
+  return openIDB().then(db => new Promise((resolve, reject) => {
+    const tx = db.transaction(IDB_STORE, 'readwrite');
+    tx.objectStore(IDB_STORE).delete(id);
+    tx.oncomplete = () => resolve();
+    tx.onerror = () => reject(tx.error);
+  }));
+}
+function idbGetAll() {
+  return openIDB().then(db => new Promise((resolve, reject) => {
+    const tx = db.transaction(IDB_STORE, 'readonly');
+    const req = tx.objectStore(IDB_STORE).getAll();
+    req.onsuccess = () => resolve(req.result || []);
+    req.onerror = () => reject(req.error);
+  }));
+}
+function idbClear() {
+  return openIDB().then(db => new Promise((resolve, reject) => {
+    const tx = db.transaction(IDB_STORE, 'readwrite');
+    tx.objectStore(IDB_STORE).clear();
+    tx.oncomplete = () => resolve();
+    tx.onerror = () => reject(tx.error);
+  }));
+}
+
 /* ---------------------------- storage layer ----------------------------
    recordsCache is the live, decrypted, in-memory source of truth for
    everything the UI renders — kept in sync on every write, so all
-   existing synchronous reads throughout the app keep working unchanged. */
+   existing synchronous reads throughout the app keep working unchanged.
+   Only the persistence side changed: upsert/delete touch one IndexedDB
+   entry, not the whole dataset. */
 function loadRecords() { return recordsCache; }
-function saveRecords(records) {
-  recordsCache = records;
-  persistRecords(records).catch(err => { console.error('Save failed:', err); toast('Could not save — try again'); });
+
+// Save/update ONE record — the normal path for every survey saved in the field.
+function upsertRecordLocal(record) {
+  const idx = recordsCache.findIndex(r => r.id === record.id);
+  if (idx >= 0) recordsCache[idx] = record; else recordsCache.push(record);
+  encryptJSON(cryptoKey, record)
+    .then(envelope => idbPut({ id: record.id, envelope }))
+    .catch(err => { console.error('Save failed:', err); toast('Could not save — try again'); });
 }
-async function persistRecords(records) {
-  if (!cryptoKey) return;
-  const envelope = await encryptJSON(cryptoKey, records);
-  localStorage.setItem(STORAGE_KEY, JSON.stringify(envelope));
+// Remove ONE record locally (does not touch the shared database).
+function deleteRecordLocal(id) {
+  recordsCache = recordsCache.filter(r => r.id !== id);
+  idbDelete(id).catch(err => console.error('Local delete failed:', err));
 }
+// Bulk-replace everything — only used for PIN setup/migration and PIN change,
+// where every record genuinely does need re-encrypting under a new key.
+async function persistAllRecordsBulk(records) {
+  await idbClear();
+  await Promise.all(records.map(r => encryptJSON(cryptoKey, r).then(envelope => idbPut({ id: r.id, envelope }))));
+}
+async function loadAllRecordsFromIDB() {
+  const entries = await idbGetAll();
+  if (entries.length === 0) return [];
+  // No per-entry catch here on purpose: if the PIN is wrong, every decrypt
+  // fails and this must reject the whole unlock attempt, not silently
+  // return an empty list that looks like "no records yet".
+  return Promise.all(entries.map(e => decryptJSON(cryptoKey, e.envelope)));
+}
+async function clearAllRecordsLocal() {
+  await idbClear();
+  recordsCache = [];
+}
+
 function saveDraft(d) {
   persistDraft(d).catch(err => console.error('Draft save failed:', err));
 }
@@ -214,6 +296,7 @@ async function runUpload(records, label) {
   if (btn) btn.textContent = label;
   let sentCount = 0, alreadyCount = 0, failCount = 0;
   const now = new Date().toISOString();
+  const touched = [];
   // Duplicate-ID conflict = HQ still has it (harmless no-op). No conflict =
   // either genuinely new, or HQ deleted it and it just went back in — either
   // way that's a legitimate "sent". This device can only ever add rows,
@@ -225,12 +308,13 @@ async function runUpload(records, label) {
         const isDuplicate = error.code === '23505' || /duplicate key/i.test(error.message || '');
         if (isDuplicate) {
           alreadyCount++;
-          if (!r.syncedAt) r.syncedAt = now;
+          if (!r.syncedAt) { r.syncedAt = now; touched.push(r); }
         } else {
           throw error;
         }
       } else {
         r.syncedAt = now;
+        touched.push(r);
         sentCount++;
       }
     } catch (err) {
@@ -238,7 +322,9 @@ async function runUpload(records, label) {
       failCount++;
     }
   }
-  await persistRecords(loadRecords()); // save updated syncedAt flags back to this device's encrypted storage
+  // Only the records that actually changed get re-encrypted and rewritten —
+  // not the whole local dataset, however large it's grown.
+  await Promise.all(touched.map(r => upsertRecordLocal(r)));
   renderTransfer();
   if (btn) { btn.disabled = false; btn.textContent = 'Upload to HQ'; }
   if (resyncBtn) { resyncBtn.disabled = false; resyncBtn.textContent = 'Resync all with HQ'; }
@@ -789,8 +875,7 @@ function openDetail(id) {
   $('#btn-detail-back').onclick = () => switchView('records');
   $('#btn-detail-delete').onclick = () => {
     if (confirm('Delete this record from this device? This cannot be undone.')) {
-      recordsCache = recordsCache.filter(x => x.id !== r.id);
-      saveRecords(recordsCache);
+      deleteRecordLocal(r.id);
       toast('Record deleted');
       switchView('records');
     }
@@ -1308,11 +1393,7 @@ function saveDraftRecord() {
     if (!proceed) return;
   }
   draft.updatedAt = new Date().toISOString();
-  let all = loadRecords();
-  const idx = all.findIndex(r => r.id === draft.id);
-  if (idx >= 0) all[idx] = draft; else all.push(draft);
-  saveRecords(all);
-  recordsCache = all;
+  upsertRecordLocal(draft);
   clearDraft();
   stopAutosaveInterval();
   toast(editingExisting ? 'Record updated' : 'Record saved to this device');
@@ -1349,11 +1430,11 @@ $('#btn-change-pin').addEventListener('click', changePin);
 $('#btn-clear-all').addEventListener('click', () => {
   if (confirm('This will permanently erase ALL survey records on this device. Make sure you have exported and sent them to HQ first. Continue?')) {
     if (confirm('Are you absolutely sure? This cannot be undone.')) {
-      saveRecords([]);
-      clearDraft();
-      recordsCache = [];
-      toast('All records erased');
-      renderTransfer();
+      clearAllRecordsLocal().then(() => {
+        clearDraft();
+        toast('All records erased');
+        renderTransfer();
+      }).catch(err => { console.error('Erase failed:', err); toast('Could not erase — try again'); });
     }
   }
 });
@@ -1459,18 +1540,16 @@ $('#import-file-input').addEventListener('change', (e) => {
       }
       if (!Array.isArray(incoming) || incoming.length === 0) throw new Error('No records found in file');
 
-      let existing = loadRecords().slice();
       let added = 0, updated = 0;
       incoming.forEach(rec => {
         if (!rec.id) return;
-        const idx = existing.findIndex(r => r.id === rec.id);
-        if (idx >= 0) { existing[idx] = rec; updated++; }
-        else { existing.push(rec); added++; }
+        const exists = recordsCache.some(r => r.id === rec.id);
+        upsertRecordLocal(rec);
+        if (exists) updated++; else added++;
       });
-      saveRecords(existing);
 
       log.hidden = false;
-      log.textContent = `Import complete.\n${added} new record(s) added.\n${updated} existing record(s) updated.\nTotal on device: ${existing.length}`;
+      log.textContent = `Import complete.\n${added} new record(s) added.\n${updated} existing record(s) updated.\nTotal on device: ${recordsCache.length}`;
       renderTransfer();
       toast('Import complete');
     } catch (err) {
@@ -1562,7 +1641,8 @@ async function handleSetup(pin, confirmPin, legacyRecords) {
   localStorage.setItem(VAULT_META_KEY, JSON.stringify({ salt: saltB64, iterations: PBKDF2_ITERATIONS, createdAt: new Date().toISOString() }));
   cryptoKey = await deriveKey(pin, saltB64, PBKDF2_ITERATIONS);
   recordsCache = legacyRecords || [];
-  await persistRecords(recordsCache);
+  await persistAllRecordsBulk(recordsCache);
+  if (legacyRecords && legacyRecords.length) localStorage.removeItem(STORAGE_KEY); // old single-blob storage no longer used
   finishUnlock();
 }
 
@@ -1606,8 +1686,24 @@ async function handleUnlock(pin) {
 
 async function attemptUnlockWithKey() {
   try {
-    const raw = localStorage.getItem(STORAGE_KEY);
-    recordsCache = raw ? await decryptJSON(cryptoKey, JSON.parse(raw)) : [];
+    const idbRecords = await loadAllRecordsFromIDB();
+    if (idbRecords.length > 0) {
+      recordsCache = idbRecords;
+    } else {
+      // No IndexedDB data yet — check for the old single-blob localStorage
+      // scheme from a previous version of this app, and migrate it in once.
+      const raw = localStorage.getItem(STORAGE_KEY);
+      if (raw) {
+        const legacy = await decryptJSON(cryptoKey, JSON.parse(raw));
+        recordsCache = Array.isArray(legacy) ? legacy : [];
+        if (recordsCache.length) {
+          await persistAllRecordsBulk(recordsCache);
+          localStorage.removeItem(STORAGE_KEY);
+        }
+      } else {
+        recordsCache = [];
+      }
+    }
   } catch (e) {
     cryptoKey = null;
     return false;
@@ -1631,7 +1727,7 @@ function handleForgotPin() {
   clearPinFailState();
   cryptoKey = null;
   recordsCache = [];
-  initLockScreen();
+  idbClear().catch(() => {}).finally(() => initLockScreen());
 }
 
 function lockDevice() {
@@ -1649,11 +1745,10 @@ async function changePin() {
   if (!meta) { toast('No PIN set on this device yet'); return; }
   const currentPin = prompt('Enter your current PIN:');
   if (currentPin == null) return;
-  let testKey;
   try {
-    testKey = await deriveKey(currentPin, meta.salt, meta.iterations);
-    const raw = localStorage.getItem(STORAGE_KEY);
-    if (raw) await decryptJSON(testKey, JSON.parse(raw));
+    const testKey = await deriveKey(currentPin, meta.salt, meta.iterations);
+    const entries = await idbGetAll();
+    if (entries.length > 0) await decryptJSON(testKey, entries[0].envelope); // verify against one real entry, if any exist
   } catch (e) { toast('Current PIN is incorrect'); return; }
   const newPin = prompt('Enter a new PIN (4–8 digits):');
   if (newPin == null) return;
@@ -1664,7 +1759,7 @@ async function changePin() {
   const newSaltB64 = bytesToBase64(newSalt);
   cryptoKey = await deriveKey(newPin, newSaltB64, PBKDF2_ITERATIONS);
   localStorage.setItem(VAULT_META_KEY, JSON.stringify({ salt: newSaltB64, iterations: PBKDF2_ITERATIONS, createdAt: meta.createdAt, changedAt: new Date().toISOString() }));
-  await persistRecords(recordsCache);
+  await persistAllRecordsBulk(recordsCache);
   toast('PIN changed');
 }
 
