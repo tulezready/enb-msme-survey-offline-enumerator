@@ -446,6 +446,9 @@ function switchView(view) {
 $all('.bottomnav button').forEach(btn => {
   btn.addEventListener('click', () => {
     const v = btn.dataset.view;
+    if (currentView === 'wizard' && v !== 'wizard-new') {
+      if (!confirm('Leave this survey? Your progress is autosaved — you can continue it later from "New survey."')) return;
+    }
     if (v === 'wizard-new') { startNewSurvey(); return; }
     switchView(v);
   });
