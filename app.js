@@ -65,6 +65,37 @@ function wardOptionsHTML(llg, currentWard) {
   return opts;
 }
 
+/* ---------------------------- device LLG assignment ----------------------------
+   Each device is locked to one LLG at setup — District/LLG are then fixed on
+   every new survey, only Ward stays free per household. This removes an
+   entire class of mistake (picking the wrong district/LLG) rather than
+   relying on care, and makes this device's own Summary meaningfully scoped
+   to just the LLG it's actually responsible for. */
+const ASSIGNED_LLG_KEY = 'enb_msme_assigned_llg_v1';
+function getAssignedLLG() {
+  try { return JSON.parse(localStorage.getItem(ASSIGNED_LLG_KEY)); } catch (e) { return null; }
+}
+function setAssignedLLG(district, llg) {
+  localStorage.setItem(ASSIGNED_LLG_KEY, JSON.stringify({ district, llg }));
+}
+// Used only for the one-time migration prompt on devices that already had
+// data before this feature existed — suggests (never assumes) an LLG based
+// on whatever's already been collected, so it's a confirm-tap, not blind entry.
+function inferLLGFromRecords(records) {
+  const tally = {};
+  (records || []).forEach(r => {
+    if (r.location && r.location.district && r.location.llg) {
+      const key = r.location.district + '|||' + r.location.llg;
+      tally[key] = (tally[key] || 0) + 1;
+    }
+  });
+  let best = null, bestCount = 0;
+  Object.entries(tally).forEach(([key, count]) => { if (count > bestCount) { bestCount = count; best = key; } });
+  if (!best) return null;
+  const [district, llg] = best.split('|||');
+  return { district, llg };
+}
+
 // Supabase project — used ONLY for the one-way "Upload to HQ" feature below.
 // This device has no login; the anon key here can only INSERT new records
 // (enforced by an insert-only RLS policy), never read, edit, or delete
@@ -355,12 +386,13 @@ function uid() {
 }
 
 function newRecord() {
+  const assigned = getAssignedLLG();
   return {
     id: uid(),
     createdAt: new Date().toISOString(),
     updatedAt: new Date().toISOString(),
     syncedAt: null, // set once this record has been uploaded to HQ
-    location: { district: '', llg: '', village: '', ward: '', householdNo: '', dateCollected: todayStr(), contactPerson: '', mobile: '', postalAddress: '' },
+    location: { district: (assigned && assigned.district) || '', llg: (assigned && assigned.llg) || '', village: '', ward: '', householdNo: '', dateCollected: todayStr(), contactPerson: '', mobile: '', postalAddress: '' },
     employment: { numFormallyEmployed: '', employedMembers: [], unemployedMembers: [], comments: '' },
     businessStatus: '', // 'formal' | 'informal' | 'none'
     business: {
@@ -770,7 +802,8 @@ function renderRecordsSummary() {
     </div>
   </div></div>`;
 
-  let html = printHeader + `<div class="warn-box">Summary of all ${total} record(s) currently stored on this device — updates automatically as more surveys are collected or imported.</div>`;
+  const assigned = getAssignedLLG();
+  let html = printHeader + `<div class="warn-box">Summary of all ${total} record(s) collected${assigned ? ` for <strong>${esc(assigned.llg)}</strong>` : ' on this device'} — updates automatically as more surveys are collected.</div>`;
 
   html += `<div class="stat-grid">
     <div class="stat-card"><div class="num">${total}</div><div class="lbl">Total surveyed</div></div>
@@ -784,7 +817,12 @@ function renderRecordsSummary() {
     { label: 'No business', value: byStatus.none, color: '#B9B2A6' }
   ]);
   html += trendChartHTML('Surveys Collected — Last 8 Weeks', computeWeeklyTrend(all, 8));
-  html += stackedBarBlockHTML('By District (composition)', DISTRICTS.map(d => ({ label: d, ...byDistrictStatus[d] })));
+  // A device locked to one LLG will only ever have one populated district —
+  // the 4-district breakdown just isn't relevant here, so it's dropped.
+  // Kept as a fallback only for the unlikely case of an unassigned device.
+  if (!assigned) {
+    html += stackedBarBlockHTML('By District (composition)', DISTRICTS.map(d => ({ label: d, ...byDistrictStatus[d] })));
+  }
   html += barBlockHTML('B. Employment', [
     ['Total formally employed (reported)', totalFormallyEmployed],
     ['Employed members listed (Table 1)', totalEmployedListed],
@@ -989,7 +1027,17 @@ function bindYN(root) {
 
 /* ---- Step A: Location ---- */
 function renderStepA(el) {
-  el.innerHTML = `
+  const locked = !!getAssignedLLG();
+  const locationHTML = locked ? `
+    <div class="field">
+      <label>District <span class="opt">(locked to this device)</span></label>
+      <input type="text" value="${esc(draft.location.district)}" disabled style="background:var(--surface-2); color:var(--text-muted);">
+    </div>
+    <div class="field">
+      <label>LLG <span class="opt">(locked to this device)</span></label>
+      <input type="text" value="${esc(draft.location.llg)}" disabled style="background:var(--surface-2); color:var(--text-muted);">
+    </div>
+  ` : `
     <div class="field">
       <label>District</label>
       <select data-bind="location.district" id="loc-district-select">
@@ -997,17 +1045,19 @@ function renderStepA(el) {
         ${DISTRICTS.map(d => `<option value="${d}">${d}</option>`).join('')}
       </select>
     </div>
-    <div class="field-row">
-      <div class="field"><label>LLG</label>
-        <select data-bind="location.llg" id="loc-llg-select">
-          ${llgOptionsHTML(draft.location.district, draft.location.llg)}
-        </select>
-      </div>
-      <div class="field"><label>Ward</label>
-        <select data-bind="location.ward" id="loc-ward-select">
-          ${wardOptionsHTML(draft.location.llg, draft.location.ward)}
-        </select>
-      </div>
+    <div class="field"><label>LLG</label>
+      <select data-bind="location.llg" id="loc-llg-select">
+        ${llgOptionsHTML(draft.location.district, draft.location.llg)}
+      </select>
+    </div>
+  `;
+
+  el.innerHTML = `
+    ${locationHTML}
+    <div class="field"><label>Ward</label>
+      <select data-bind="location.ward" id="loc-ward-select">
+        ${wardOptionsHTML(draft.location.llg, draft.location.ward)}
+      </select>
     </div>
     <div class="field"><label>Village</label><input type="text" data-bind="location.village"></div>
     <div class="field-row">
@@ -1023,16 +1073,18 @@ function renderStepA(el) {
     <div class="field"><label>Postal address</label><textarea data-bind="location.postalAddress"></textarea></div>
   `;
   bindInputs(el);
-  $('#loc-district-select').addEventListener('change', () => {
-    draft.location.llg = ''; // old LLG almost certainly doesn't belong to the newly picked district
-    draft.location.ward = '';
-    $('#loc-llg-select').innerHTML = llgOptionsHTML(draft.location.district, draft.location.llg);
-    $('#loc-ward-select').innerHTML = wardOptionsHTML(draft.location.llg, draft.location.ward);
-  });
-  $('#loc-llg-select').addEventListener('change', () => {
-    draft.location.ward = ''; // old ward almost certainly doesn't belong to the newly picked LLG
-    $('#loc-ward-select').innerHTML = wardOptionsHTML(draft.location.llg, draft.location.ward);
-  });
+  if (!locked) {
+    $('#loc-district-select').addEventListener('change', () => {
+      draft.location.llg = ''; // old LLG almost certainly doesn't belong to the newly picked district
+      draft.location.ward = '';
+      $('#loc-llg-select').innerHTML = llgOptionsHTML(draft.location.district, draft.location.llg);
+      $('#loc-ward-select').innerHTML = wardOptionsHTML(draft.location.llg, draft.location.ward);
+    });
+    $('#loc-llg-select').addEventListener('change', () => {
+      draft.location.ward = ''; // old ward almost certainly doesn't belong to the newly picked LLG
+      $('#loc-ward-select').innerHTML = wardOptionsHTML(draft.location.llg, draft.location.ward);
+    });
+  }
 }
 
 /* ---- Step B: Employment & Education + business status ---- */
@@ -1425,11 +1477,15 @@ function renderTransfer() {
       ? (recordsCache.length === 0 ? 'No records yet' : 'All records uploaded to HQ')
       : `${pendingCount} of ${recordsCache.length} record(s) not yet uploaded`;
   }
+  const assigned = getAssignedLLG();
+  const assignedEl = $('#assigned-llg-display');
+  if (assignedEl) assignedEl.textContent = assigned ? `${assigned.llg} (${assigned.district})` : 'Not set';
 }
 $('#btn-upload-hq').addEventListener('click', uploadToHQ);
 $('#btn-resync-hq').addEventListener('click', resyncAllWithHQ);
 $('#btn-lock-device').addEventListener('click', lockDevice);
 $('#btn-change-pin').addEventListener('click', changePin);
+$('#btn-change-llg').addEventListener('click', changeLLGAssignment);
 $('#btn-clear-all').addEventListener('click', () => {
   if (confirm('This will permanently erase ALL survey records on this device. Make sure you have exported and sent them to HQ first. Continue?')) {
     if (confirm('Are you absolutely sure? This cannot be undone.')) {
@@ -1599,10 +1655,24 @@ function showLockError(msg) {
 }
 
 function renderSetupForm(existingCount, legacyRecords) {
+  const inferred = legacyRecords && legacyRecords.length ? inferLLGFromRecords(legacyRecords) : null;
   const c = $('#lock-content');
   c.innerHTML = `
-    <h3>Secure this device</h3>
-    <p class="lock-desc">Set a PIN to encrypt the survey data stored on this device. Only someone with the PIN can open the app or read the data.</p>
+    <h3>Set up this device</h3>
+    <p class="lock-desc">Each device is assigned to one LLG, so every survey it collects is automatically attributed correctly — no picking the wrong LLG by mistake.</p>
+    <div class="field" style="text-align:left; margin-bottom:10px;">
+      <label style="display:block; font-size:12.5px; font-weight:600; margin-bottom:5px;">District</label>
+      <select id="setup-district-select" style="width:100%; padding:11px 12px; border:1px solid var(--border); border-radius:8px; background:var(--surface);">
+        <option value="">Select district…</option>
+        ${DISTRICTS.map(d => `<option value="${d}" ${inferred && inferred.district === d ? 'selected' : ''}>${d}</option>`).join('')}
+      </select>
+    </div>
+    <div class="field" style="text-align:left; margin-bottom:14px;">
+      <label style="display:block; font-size:12.5px; font-weight:600; margin-bottom:5px;">LLG</label>
+      <select id="setup-llg-select" style="width:100%; padding:11px 12px; border:1px solid var(--border); border-radius:8px; background:var(--surface);">
+        ${llgOptionsHTML(inferred ? inferred.district : '', inferred ? inferred.llg : '')}
+      </select>
+    </div>
     ${existingCount > 0 ? `<div class="lock-warn">This device already has ${existingCount} record(s) saved. They'll be encrypted with the PIN you set now.</div>` : ''}
     <div class="lock-warn">If you forget this PIN, the data on this device cannot be recovered — there is no reset. Write it down somewhere safe.</div>
     <input type="password" inputmode="numeric" pattern="[0-9]*" id="pin-setup-1" placeholder="Choose a PIN (4–8 digits)" maxlength="8">
@@ -1610,7 +1680,15 @@ function renderSetupForm(existingCount, legacyRecords) {
     <div class="lock-error" id="lock-error"></div>
     <button class="btn btn-primary btn-full" id="btn-pin-setup">Secure this device</button>
   `;
-  const submit = () => handleSetup($('#pin-setup-1').value, $('#pin-setup-2').value, legacyRecords);
+  $('#setup-district-select').addEventListener('change', () => {
+    $('#setup-llg-select').innerHTML = llgOptionsHTML($('#setup-district-select').value, '');
+  });
+  const submit = () => {
+    const district = $('#setup-district-select').value;
+    const llg = $('#setup-llg-select').value;
+    if (!district || !llg) { showLockError("Select this device's District and LLG."); return; }
+    handleSetup($('#pin-setup-1').value, $('#pin-setup-2').value, legacyRecords, district, llg);
+  };
   $('#btn-pin-setup').addEventListener('click', submit);
   $('#pin-setup-2').addEventListener('keydown', (e) => { if (e.key === 'Enter') submit(); });
 }
@@ -1635,7 +1713,7 @@ function renderUnlockForm() {
   if (remaining > 0) showLockError(`Too many incorrect attempts. Try again in ${Math.ceil(remaining / 1000)}s.`);
 }
 
-async function handleSetup(pin, confirmPin, legacyRecords) {
+async function handleSetup(pin, confirmPin, legacyRecords, district, llg) {
   if (!/^\d{4,8}$/.test(pin)) { showLockError('PIN must be 4–8 digits.'); return; }
   if (pin !== confirmPin) { showLockError('PINs do not match.'); return; }
   showLockError('');
@@ -1646,6 +1724,7 @@ async function handleSetup(pin, confirmPin, legacyRecords) {
   recordsCache = legacyRecords || [];
   await persistAllRecordsBulk(recordsCache);
   if (legacyRecords && legacyRecords.length) localStorage.removeItem(STORAGE_KEY); // old single-blob storage no longer used
+  setAssignedLLG(district, llg);
   finishUnlock();
 }
 
@@ -1711,13 +1790,59 @@ async function attemptUnlockWithKey() {
     cryptoKey = null;
     return false;
   }
-  finishUnlock();
+  if (!getAssignedLLG()) {
+    renderConfirmLLGScreen(); // existing device, upgrading — one-time prompt before reaching the dashboard
+  } else {
+    finishUnlock();
+  }
   return true;
+}
+
+// One-time migration screen for devices that already had a PIN (and possibly
+// data) before device-level LLG locking existed. Suggests an LLG based on
+// this device's own existing records where possible, but always requires
+// an explicit confirm tap — never silently assumes.
+function renderConfirmLLGScreen() {
+  const inferred = inferLLGFromRecords(recordsCache);
+  const c = $('#lock-content');
+  c.innerHTML = `
+    <h3>Confirm this device's LLG</h3>
+    <p class="lock-desc">One-time step. From now on, every new survey on this device automatically uses this LLG — no more picking it per survey.</p>
+    ${inferred ? `<div class="lock-warn">Based on this device's existing records, this looks like <strong>${esc(inferred.llg)}</strong> — confirm or change it below.</div>` : ''}
+    <div class="field" style="text-align:left; margin-bottom:10px;">
+      <label style="display:block; font-size:12.5px; font-weight:600; margin-bottom:5px;">District</label>
+      <select id="confirm-district-select" style="width:100%; padding:11px 12px; border:1px solid var(--border); border-radius:8px; background:var(--surface);">
+        <option value="">Select district…</option>
+        ${DISTRICTS.map(d => `<option value="${d}" ${inferred && inferred.district === d ? 'selected' : ''}>${d}</option>`).join('')}
+      </select>
+    </div>
+    <div class="field" style="text-align:left; margin-bottom:14px;">
+      <label style="display:block; font-size:12.5px; font-weight:600; margin-bottom:5px;">LLG</label>
+      <select id="confirm-llg-select" style="width:100%; padding:11px 12px; border:1px solid var(--border); border-radius:8px; background:var(--surface);">
+        ${llgOptionsHTML(inferred ? inferred.district : '', inferred ? inferred.llg : '')}
+      </select>
+    </div>
+    <div class="lock-error" id="lock-error"></div>
+    <button class="btn btn-primary btn-full" id="btn-confirm-llg">Confirm &amp; Continue</button>
+  `;
+  $('#confirm-district-select').addEventListener('change', () => {
+    $('#confirm-llg-select').innerHTML = llgOptionsHTML($('#confirm-district-select').value, '');
+  });
+  $('#btn-confirm-llg').addEventListener('click', () => {
+    const district = $('#confirm-district-select').value;
+    const llg = $('#confirm-llg-select').value;
+    if (!district || !llg) { showLockError("Select this device's District and LLG."); return; }
+    setAssignedLLG(district, llg);
+    finishUnlock();
+  });
 }
 
 function finishUnlock() {
   $('#lock-screen').hidden = true;
   document.body.classList.remove('locked');
+  const assigned = getAssignedLLG();
+  const llgLabel = $('#brand-llg-label');
+  if (llgLabel) llgLabel.textContent = assigned ? assigned.llg : 'Commerce & Industry';
   renderDashboard();
 }
 
@@ -1764,6 +1889,63 @@ async function changePin() {
   localStorage.setItem(VAULT_META_KEY, JSON.stringify({ salt: newSaltB64, iterations: PBKDF2_ITERATIONS, createdAt: meta.createdAt, changedAt: new Date().toISOString() }));
   await persistAllRecordsBulk(recordsCache);
   toast('PIN changed');
+}
+
+async function changeLLGAssignment() {
+  let meta;
+  try { meta = JSON.parse(localStorage.getItem(VAULT_META_KEY)); } catch (e) { meta = null; }
+  if (!meta) { toast('No PIN set on this device yet'); return; }
+  const currentPin = prompt("Enter your PIN to change this device's LLG assignment:");
+  if (currentPin == null) return;
+  try {
+    const testKey = await deriveKey(currentPin, meta.salt, meta.iterations);
+    const entries = await idbGetAll();
+    if (entries.length > 0) await decryptJSON(testKey, entries[0].envelope);
+  } catch (e) { toast('PIN is incorrect'); return; }
+
+  const current = getAssignedLLG();
+  $('#lock-screen').hidden = false;
+  document.body.classList.add('locked');
+  const c = $('#lock-content');
+  c.innerHTML = `
+    <h3>Change LLG Assignment</h3>
+    <p class="lock-desc">This only affects NEW surveys from now on — existing records keep their original LLG.</p>
+    <div class="field" style="text-align:left; margin-bottom:10px;">
+      <label style="display:block; font-size:12.5px; font-weight:600; margin-bottom:5px;">District</label>
+      <select id="change-district-select" style="width:100%; padding:11px 12px; border:1px solid var(--border); border-radius:8px; background:var(--surface);">
+        <option value="">Select district…</option>
+        ${DISTRICTS.map(d => `<option value="${d}" ${current && current.district === d ? 'selected' : ''}>${d}</option>`).join('')}
+      </select>
+    </div>
+    <div class="field" style="text-align:left; margin-bottom:14px;">
+      <label style="display:block; font-size:12.5px; font-weight:600; margin-bottom:5px;">LLG</label>
+      <select id="change-llg-select" style="width:100%; padding:11px 12px; border:1px solid var(--border); border-radius:8px; background:var(--surface);">
+        ${llgOptionsHTML(current ? current.district : '', current ? current.llg : '')}
+      </select>
+    </div>
+    <div class="lock-error" id="lock-error"></div>
+    <button class="btn btn-primary btn-full" id="btn-save-llg-change">Save</button>
+    <button type="button" class="lock-forgot" id="btn-cancel-llg-change">Cancel</button>
+  `;
+  $('#change-district-select').addEventListener('change', () => {
+    $('#change-llg-select').innerHTML = llgOptionsHTML($('#change-district-select').value, '');
+  });
+  $('#btn-save-llg-change').addEventListener('click', () => {
+    const district = $('#change-district-select').value;
+    const llg = $('#change-llg-select').value;
+    if (!district || !llg) { showLockError('Select a District and LLG.'); return; }
+    setAssignedLLG(district, llg);
+    $('#lock-screen').hidden = true;
+    document.body.classList.remove('locked');
+    const llgLabel = $('#brand-llg-label');
+    if (llgLabel) llgLabel.textContent = llg;
+    toast('LLG assignment updated');
+    renderTransfer();
+  });
+  $('#btn-cancel-llg-change').addEventListener('click', () => {
+    $('#lock-screen').hidden = true;
+    document.body.classList.remove('locked');
+  });
 }
 
 function initLockScreen() {
