@@ -532,13 +532,35 @@ function renderDashboard() {
   $('#stat-formal').textContent = recordsCache.filter(r => r.businessStatus === 'formal').length;
   $('#stat-informal').textContent = recordsCache.filter(r => r.businessStatus === 'informal').length;
 
-  const byDistrict = {};
-  DISTRICTS.forEach(d => byDistrict[d] = 0);
-  recordsCache.forEach(r => { const d = r.location.district; if (d) byDistrict[d] = (byDistrict[d] || 0) + 1; });
+  const assigned = getAssignedLLG();
+  const officialWards = (assigned && WARDS_BY_LLG[assigned.llg]) || [];
+  const wardCounts = {};
+  officialWards.forEach(w => wardCounts[w] = 0);
+  let otherWardCount = 0;
+  recordsCache.forEach(r => {
+    const w = r.location && r.location.ward;
+    if (!w) return;
+    if (wardCounts.hasOwnProperty(w)) wardCounts[w]++;
+    else otherWardCount++;
+  });
+  const wardsStarted = officialWards.filter(w => wardCounts[w] > 0).length;
+
   const dEl = $('#district-breakdown');
-  dEl.innerHTML = DISTRICTS.map(d => `
-    <div class="review-line"><span class="k">${esc(d)}</span><span class="v">${byDistrict[d] || 0}</span></div>
+  const progressEl = $('#ward-progress-summary');
+  if (progressEl) {
+    progressEl.textContent = officialWards.length
+      ? `${wardsStarted} of ${officialWards.length} wards started`
+      : 'No LLG assigned yet';
+  }
+  // Official order, matching the Ward dropdown and the paper form numbering —
+  // never re-sorted by count, so it stays usable as a literal checklist.
+  let wardsHTML = officialWards.map(w => `
+    <div class="review-line"><span class="k">${esc(w)}</span><span class="v">${wardCounts[w]}</span></div>
   `).join('');
+  if (otherWardCount > 0) {
+    wardsHTML += `<div class="review-line"><span class="k">Other / unrecognized ward</span><span class="v">${otherWardCount}</span></div>`;
+  }
+  dEl.innerHTML = wardsHTML || `<p class="hint">No LLG assigned to this device yet.</p>`;
 
   const recent = [...recordsCache].sort((a, b) => new Date(b.updatedAt) - new Date(a.updatedAt)).slice(0, 5);
   const rEl = $('#recent-list');

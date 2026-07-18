@@ -426,8 +426,14 @@ body.locked .topbar, body.locked .bottomnav{ display:none; }
     <div class="txt"><strong>Start new survey</strong><span>Household economic &amp; MSME form</span></div>
   </button>
 
-  <div class="section-title">By district</div>
-  <div class="card" id="district-breakdown"></div>
+  <div class="section-title">Ward Coverage</div>
+  <div class="card">
+    <div class="review-line" style="border-bottom:2px solid var(--border); padding-bottom:8px; margin-bottom:2px;">
+      <span class="k" style="font-weight:700; color:var(--primary-dark);">Progress</span>
+      <span class="v" id="ward-progress-summary">—</span>
+    </div>
+    <div id="district-breakdown"></div>
+  </div>
 
   <div class="section-title">Recent records</div>
   <div id="recent-list"></div>
