@@ -1,6 +1,7 @@
 /* =========================================================================
-   ENB Commerce & Industry — Economic & MSME Survey (Offline)
-   All data lives in localStorage on this device. No network calls, ever.
+   ENBPA — Division of Commerce & Industry — Economic & MSME Survey (LLG App)
+   All data lives encrypted on this device. No network calls except the
+   optional "Upload to HQ" button, and only when you tap it.
    ========================================================================= */
 
 const STORAGE_KEY = 'enb_msme_records_v1';
@@ -797,7 +798,8 @@ function renderRecordsSummary() {
   const printHeader = `<div class="print-header"><div class="ph-row">
     <div class="ph-seal"><img src="logo.svg" alt="ENB logo"></div>
     <div>
-      <div class="ph-title">ENB Commerce &amp; Industry — MSME Survey Report</div>
+      <div class="ph-title">ENBPA &middot; Division of Commerce &amp; Industry — Economic &amp; MSME Survey Report</div>
+      <div class="ph-sub-label" style="font-size:10px; color:var(--text-muted); letter-spacing:.04em; text-transform:uppercase;">LLG App</div>
       <div class="ph-sub">Generated ${new Date().toLocaleDateString('en-GB', { day: '2-digit', month: 'long', year: 'numeric' })} · ${total} record(s)</div>
     </div>
   </div></div>`;
@@ -1500,7 +1502,7 @@ $('#btn-clear-all').addEventListener('click', () => {
 $('#btn-export-json').addEventListener('click', () => {
   const all = loadRecords();
   if (all.length === 0) { toast('No records to export yet'); return; }
-  const payload = { exportedAt: new Date().toISOString(), source: 'ENB MSME Survey (offline)', recordCount: all.length, records: all };
+  const payload = { exportedAt: new Date().toISOString(), source: 'ENBPA LLG App — Economic & MSME Survey', recordCount: all.length, records: all };
   downloadFile(`enb-msme-export-${todayStr()}.json`, JSON.stringify(payload, null, 2), 'application/json');
   toast('JSON exported — share this file with HQ');
 });
@@ -1842,7 +1844,7 @@ function finishUnlock() {
   document.body.classList.remove('locked');
   const assigned = getAssignedLLG();
   const llgLabel = $('#brand-llg-label');
-  if (llgLabel) llgLabel.textContent = assigned ? assigned.llg : 'Commerce & Industry';
+  if (llgLabel) llgLabel.textContent = assigned ? assigned.llg : 'Economic & MSME Survey';
   renderDashboard();
 }
 
