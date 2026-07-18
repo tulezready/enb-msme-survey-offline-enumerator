@@ -602,10 +602,12 @@ function recordItemHTML(r) {
 const RECORDS_PAGE_SIZE = 50;
 function renderRecordsList() {
   recordsCache = loadRecords();
+  const assigned = getAssignedLLG();
+  const officialWards = (assigned && WARDS_BY_LLG[assigned.llg]) || [];
   const chipsEl = $('#district-chips');
   const activeChip = renderRecordsList._chip || 'All';
-  chipsEl.innerHTML = ['All', ...DISTRICTS].map(d =>
-    `<button class="chip ${d === activeChip ? 'active' : ''}" data-d="${esc(d)}">${esc(d)}</button>`
+  chipsEl.innerHTML = ['All', ...officialWards].map(w =>
+    `<button class="chip ${w === activeChip ? 'active' : ''}" data-d="${esc(w)}">${esc(w)}</button>`
   ).join('');
   $all('.chip', chipsEl).forEach(c => c.addEventListener('click', () => {
     renderRecordsList._chip = c.dataset.d;
@@ -614,7 +616,7 @@ function renderRecordsList() {
 
   const q = ($('#search-input').value || '').toLowerCase();
   let list = recordsCache;
-  if (activeChip !== 'All') list = list.filter(r => r.location.district === activeChip);
+  if (activeChip !== 'All') list = list.filter(r => r.location.ward === activeChip);
   if (q) {
     list = list.filter(r => {
       const hay = [r.location.village, r.location.householdNo, r.location.contactPerson, r.business.name, r.location.ward, r.location.llg].join(' ').toLowerCase();
