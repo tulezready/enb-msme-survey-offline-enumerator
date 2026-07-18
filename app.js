@@ -1601,16 +1601,48 @@ $('#import-file-input').addEventListener('change', (e) => {
       }
       if (!Array.isArray(incoming) || incoming.length === 0) throw new Error('No records found in file');
 
-      let added = 0, updated = 0;
+      const assigned = getAssignedLLG();
+      let added = 0, updated = 0, rejected = 0;
+      const flaggedDuplicates = [];
+
       incoming.forEach(rec => {
-        if (!rec.id) return;
-        const exists = recordsCache.some(r => r.id === rec.id);
+        if (!rec.id || !rec.location) { rejected++; return; }
+
+        // Safety: this device only ever holds one LLG's data — a file
+        // containing a different LLG's records is refused outright, same
+        // protection as device-level locking during normal data entry.
+        if (assigned && rec.location.llg && rec.location.llg !== assigned.llg) {
+          rejected++;
+          return;
+        }
+
+        const existsById = recordsCache.some(r => r.id === rec.id);
+        if (!existsById) {
+          const possibleDup = recordsCache.find(r => r.id !== rec.id &&
+            r.location.district === rec.location.district &&
+            r.location.llg === rec.location.llg &&
+            r.location.ward === rec.location.ward &&
+            r.location.householdNo === rec.location.householdNo &&
+            r.location.householdNo);
+          if (possibleDup) {
+            flaggedDuplicates.push({ householdNo: rec.location.householdNo, ward: rec.location.ward || '—' });
+          }
+          added++;
+        } else {
+          updated++;
+        }
         upsertRecordLocal(rec);
-        if (exists) updated++; else added++;
       });
 
       log.hidden = false;
-      log.textContent = `Import complete.\n${added} new record(s) added.\n${updated} existing record(s) updated.\nTotal on device: ${recordsCache.length}`;
+      const parts = [`Import complete.`, `${added} new record(s) added.`, `${updated} existing record(s) updated.`];
+      if (rejected > 0) parts.push(`${rejected} record(s) rejected — did not match this device's assigned LLG or were missing required data.`);
+      if (flaggedDuplicates.length > 0) {
+        parts.push(`\n⚠ ${flaggedDuplicates.length} possible duplicate household(s) — same Ward/Household No. as an existing record. Worth checking manually:`);
+        flaggedDuplicates.forEach(d => parts.push(`  • Ward ${d.ward}, Household No. ${d.householdNo}`));
+      }
+      parts.push(`\nTotal on device: ${recordsCache.length}`);
+      log.textContent = parts.join('\n');
       renderTransfer();
       toast('Import complete');
     } catch (err) {
@@ -1950,9 +1982,22 @@ async function changeLLGAssignment() {
   });
 }
 
+function renderUnsupportedScreen() {
+  const c = $('#lock-content');
+  c.innerHTML = `
+    <h3>This browser isn't supported</h3>
+    <p class="lock-desc">This app needs offline storage (IndexedDB) to keep survey data safely on this device, and it isn't available right now.</p>
+    <div class="lock-warn">This usually means the browser is in private/incognito mode, is very outdated, or has storage blocked by a device policy. Try opening this app in a normal Chrome window, or on a different device.</div>
+  `;
+}
+
 function initLockScreen() {
   $('#lock-screen').hidden = false;
   document.body.classList.add('locked');
+  if (typeof indexedDB === 'undefined') {
+    renderUnsupportedScreen();
+    return;
+  }
   const vaultMetaRaw = localStorage.getItem(VAULT_META_KEY);
   let legacyRecords = null;
   if (!vaultMetaRaw) {
@@ -1966,10 +2011,6 @@ function initLockScreen() {
 }
 
 /* -------------------------------- boot -------------------------------- */
-if (APP_ROLE === 'enumerator') {
-  const importSection = document.getElementById('import-section');
-  if (importSection) importSection.remove();
-}
 if ('serviceWorker' in navigator) {
   setOfflineStatus(false);
   if (location.protocol !== 'https:' && location.hostname !== 'localhost') {
