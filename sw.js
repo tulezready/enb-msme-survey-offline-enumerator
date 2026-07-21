@@ -1,11 +1,14 @@
-const CACHE_NAME = 'msme-survey-enum-v25';
+const CACHE_NAME = 'msme-survey-enum-v26';
 // Core shell: same-origin, must succeed, or the offline survey app itself breaks.
 const CORE_SHELL = [
   './index.html',
   './app.js',
   './manifest.json',
   './icon.svg',
-  './logo.svg'
+  './logo.svg',
+  './icon-192.png',
+  './icon-512.png',
+  './icon-maskable-512.png'
 ];
 // External library for the optional "Upload to HQ" feature. Cached best-effort —
 // if this one fetch fails (CDN hiccup, no signal on first install), the core
