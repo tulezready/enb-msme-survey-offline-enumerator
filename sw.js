@@ -4,11 +4,11 @@ const CORE_SHELL = [
   './index.html',
   './app.js',
   './manifest.json',
-  './icon.svg',
-  './logo.svg',
   './icon-192.png',
   './icon-512.png',
-  './icon-maskable-512.png'
+  './icon-maskable-192.png',
+  './icon-maskable-512.png',
+  './logo.svg'
 ];
 // External library for the optional "Upload to HQ" feature. Cached best-effort —
 // if this one fetch fails (CDN hiccup, no signal on first install), the core
