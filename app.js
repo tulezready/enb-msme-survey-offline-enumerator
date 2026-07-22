@@ -781,9 +781,12 @@ function renderRecordsSummary() {
     container.innerHTML = `<div class="empty-state"><div class="icon">📊</div><p>No records on this device yet.<br>The summary fills in once records are collected or imported.</p></div>`;
     return;
   }
+  const assigned = getAssignedLLG();
 
   const byDistrict = {}; DISTRICTS.forEach(d => byDistrict[d] = 0);
   const byDistrictStatus = {}; DISTRICTS.forEach(d => byDistrictStatus[d] = { formal: 0, informal: 0, none: 0 });
+  const officialWardsForSummary = (assigned && WARDS_BY_LLG[assigned.llg]) || [];
+  const byWardStatus = {}; officialWardsForSummary.forEach(w => byWardStatus[w] = { formal: 0, informal: 0, none: 0 });
   const byStatus = { formal: 0, informal: 0, none: 0 };
   let totalFormallyEmployed = 0, totalEmployedListed = 0, totalUnemployedListed = 0;
   const activityTally = {};
@@ -801,6 +804,9 @@ function renderRecordsSummary() {
     else if (r.businessStatus === 'none') byStatus.none++;
     if (r.location.district && byDistrictStatus[r.location.district] && ['formal', 'informal', 'none'].includes(r.businessStatus)) {
       byDistrictStatus[r.location.district][r.businessStatus]++;
+    }
+    if (r.location.ward && byWardStatus[r.location.ward] && ['formal', 'informal', 'none'].includes(r.businessStatus)) {
+      byWardStatus[r.location.ward][r.businessStatus]++;
     }
 
     totalFormallyEmployed += Number(r.employment.numFormallyEmployed) || 0;
@@ -828,7 +834,6 @@ function renderRecordsSummary() {
     </div>
   </div></div>`;
 
-  const assigned = getAssignedLLG();
   let html = printHeader + `<div class="warn-box">Summary of all ${total} record(s) collected${assigned ? ` for <strong>${esc(assigned.llg)}</strong>` : ' on this device'} — updates automatically as more surveys are collected.</div>`;
 
   html += `<div class="stat-grid">
@@ -843,10 +848,12 @@ function renderRecordsSummary() {
     { label: 'No business', value: byStatus.none, color: '#B9B2A6' }
   ]);
   html += trendChartHTML('Surveys Collected — Last 8 Weeks', computeWeeklyTrend(all, 8));
-  // A device locked to one LLG will only ever have one populated district —
-  // the 4-district breakdown just isn't relevant here, so it's dropped.
-  // Kept as a fallback only for the unlikely case of an unassigned device.
-  if (!assigned) {
+  // A device locked to one LLG will only ever have one populated district,
+  // so that breakdown is replaced with the more useful equivalent: business
+  // status composition per ward within this LLG, in official ward order.
+  if (assigned && officialWardsForSummary.length) {
+    html += stackedBarBlockHTML('By Ward (composition)', officialWardsForSummary.map(w => ({ label: w, ...byWardStatus[w] })));
+  } else if (!assigned) {
     html += stackedBarBlockHTML('By District (composition)', DISTRICTS.map(d => ({ label: d, ...byDistrictStatus[d] })));
   }
   html += barBlockHTML('B. Employment', [
