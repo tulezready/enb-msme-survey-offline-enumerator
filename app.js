@@ -139,8 +139,8 @@ const STEP_DEFS = {
 };
 
 function stepsForStatus(status) {
-  if (status === 'formal') return ['A', 'B', 'F', 'C', 'D', 'E', 'REVIEW'];
-  if (status === 'informal') return ['A', 'B', 'F', 'G8', 'G', 'REVIEW'];
+  if (status === 'formal') return ['A', 'B', 'C', 'D', 'E', 'F', 'REVIEW'];
+  if (status === 'informal') return ['A', 'B', 'G8', 'G', 'F', 'REVIEW'];
   return ['A', 'B', 'F', 'REVIEW'];
 }
 
