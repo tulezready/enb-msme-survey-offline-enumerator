@@ -955,7 +955,7 @@ function openDetail(id) {
       switchView('records');
     }
   };
-  $('#btn-detail-export').onclick = () => downloadFile(`msme-${recordDisplayName(r).replace(/[,\s]+/g,'-')}.json`, JSON.stringify(r, null, 2), 'application/json');
+  $('#btn-detail-export').onclick = () => shareOrDownloadFile(`msme-${recordDisplayName(r).replace(/[,\s]+/g,'-')}.json`, JSON.stringify(r, null, 2), 'application/json');
   $('#btn-detail-print').onclick = () => { window.print(); };
 }
 function reviewBlockHTML(title, pairs, extraHtml) {
@@ -1532,18 +1532,20 @@ $('#btn-clear-all').addEventListener('click', () => {
     }
   }
 });
-$('#btn-export-json').addEventListener('click', () => {
+$('#btn-export-json').addEventListener('click', async () => {
   const all = loadRecords();
   if (all.length === 0) { toast('No records to export yet'); return; }
+  const filename = exportFilename('json');
   const payload = { exportedAt: new Date().toISOString(), source: 'ENBPA LLG App — Economic & MSME Survey', recordCount: all.length, records: all };
-  downloadFile(`enb-msme-export-${todayStr()}.json`, JSON.stringify(payload, null, 2), 'application/json');
-  toast('JSON exported — share this file with HQ');
+  await shareOrDownloadFile(filename, JSON.stringify(payload, null, 2), 'application/json');
+  toast('Ready to share — pick where to send it');
 });
-$('#btn-export-csv').addEventListener('click', () => {
+$('#btn-export-csv').addEventListener('click', async () => {
   const all = loadRecords();
   if (all.length === 0) { toast('No records to export yet'); return; }
-  downloadFile(`enb-msme-export-${todayStr()}.csv`, recordsToCSV(all), 'text/csv');
-  toast('CSV exported');
+  const filename = exportFilename('csv');
+  await shareOrDownloadFile(filename, recordsToCSV(all), 'text/csv');
+  toast('Ready to share — pick where to send it');
 });
 
 // Turns an array of row-objects into one readable cell: "entry 1 | entry 2 | ..."
@@ -1612,6 +1614,41 @@ function downloadFile(filename, content, mime) {
   a.href = url; a.download = filename;
   document.body.appendChild(a); a.click(); document.body.removeChild(a);
   setTimeout(() => URL.revokeObjectURL(url), 2000);
+}
+
+// Opens the phone's native share sheet (WhatsApp, Bluetooth, email, etc.) with
+// the file already attached, so sending an export to a teammate is one motion
+// instead of hunting through a downloads folder afterward. Falls back to a
+// normal download on browsers/devices that don't support file sharing.
+async function shareOrDownloadFile(filename, content, mime) {
+  let file = null;
+  try { file = new File([new Blob([content], { type: mime })], filename, { type: mime }); } catch (e) { /* File constructor unsupported - fall through to download */ }
+
+  if (file && navigator.canShare && navigator.canShare({ files: [file] })) {
+    try {
+      await navigator.share({ files: [file], title: filename });
+      return; // sent successfully via the native share sheet
+    } catch (err) {
+      if (err && err.name === 'AbortError') return; // person backed out of the share sheet - don't also force a download on top of that
+      console.error('Share failed, falling back to download:', err);
+    }
+  }
+  downloadFile(filename, content, mime);
+}
+
+// Asks who/which wards this export represents, purely for the filename - since
+// the same device is often shared across several enumerators in a session,
+// the device's own LLG assignment alone isn't enough to tell exports apart.
+function promptExportLabel() {
+  const raw = prompt("Whose entries are these, or which wards? (Optional - just makes the file name easier to tell apart later)");
+  if (!raw) return '';
+  return raw.trim().replace(/[^a-zA-Z0-9 _-]/g, '').replace(/\s+/g, '_').slice(0, 40);
+}
+function exportFilename(ext) {
+  const assigned = getAssignedLLG();
+  const llgPart = assigned ? assigned.llg.replace(/\s+/g, '_') : 'export';
+  const label = promptExportLabel();
+  return `enb-msme-${llgPart}${label ? '-' + label : ''}-${todayStr()}.${ext}`;
 }
 
 $('#import-file-input').addEventListener('change', (e) => {
