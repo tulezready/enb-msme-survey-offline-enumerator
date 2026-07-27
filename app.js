@@ -140,7 +140,7 @@ const STEP_DEFS = {
 
 function stepsForStatus(status) {
   if (status === 'formal') return ['A', 'B', 'C', 'D', 'E', 'F', 'REVIEW'];
-  if (status === 'informal') return ['A', 'B', 'G8', 'G', 'F', 'REVIEW'];
+  if (status === 'informal') return ['A', 'B', 'F', 'G8', 'G', 'REVIEW'];
   return ['A', 'B', 'F', 'REVIEW'];
 }
 
