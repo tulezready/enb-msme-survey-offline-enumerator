@@ -584,6 +584,10 @@ function recordDisplayName(r) {
   return parts.length ? parts.join(', ') : (r.business.name || 'Unnamed record');
 }
 
+let selectMode = false;
+let selectedIds = new Set();
+const LAST_EXPORT_KEY = 'enb_msme_last_export_at';
+
 function recordItemHTML(r) {
   const status = r.businessStatus || 'none';
   const initials = (r.location.village || r.location.district || '?').slice(0, 2).toUpperCase();
@@ -591,10 +595,11 @@ function recordItemHTML(r) {
   const sub = [r.location.village, r.business.name].filter(Boolean).join(' · ') || 'No further detail';
   const statusLabel = status === 'formal' ? 'Formal' : status === 'informal' ? 'Informal' : 'No business';
   const syncNote = r.syncedAt ? '✓ Uploaded' : 'Not uploaded yet';
+  const checked = selectedIds.has(r.id);
   return `<div class="record-item" data-id="${r.id}">
-    <div class="badge ${status}">${esc(initials)}</div>
+    ${selectMode ? `<input type="checkbox" class="record-select-checkbox" data-id="${r.id}" ${checked ? 'checked' : ''} style="width:20px; height:20px; flex-shrink:0; accent-color:var(--primary);">` : `<div class="badge ${status}">${esc(initials)}</div>`}
     <div class="info"><strong>${esc(title)}</strong><span>${esc(sub)} · ${fmtDate(r.location.dateCollected)} · ${syncNote}</span></div>
-    <div class="status-tag ${status}">${statusLabel}</div>
+    ${selectMode ? '' : `<div class="status-tag ${status}">${statusLabel}</div>`}
   </div>`;
 }
 
@@ -640,7 +645,16 @@ function renderRecordsList() {
       html += `<button class="btn btn-outline btn-full" id="btn-load-more-records">Load more (${list.length - visibleCount} remaining)</button>`;
     }
     container.innerHTML = html;
-    $all('.record-item', container).forEach(el => el.addEventListener('click', () => openDetail(el.dataset.id)));
+    if (selectMode) {
+      $all('.record-item', container).forEach(el => el.addEventListener('click', (e) => {
+        const id = el.dataset.id;
+        if (selectedIds.has(id)) selectedIds.delete(id); else selectedIds.add(id);
+        renderRecordsList._resetPage = false;
+        renderRecordsList();
+      }));
+    } else {
+      $all('.record-item', container).forEach(el => el.addEventListener('click', () => openDetail(el.dataset.id)));
+    }
     const loadMoreBtn = $('#btn-load-more-records');
     if (loadMoreBtn) loadMoreBtn.addEventListener('click', () => {
       renderRecordsList._page = page + 1;
@@ -648,11 +662,50 @@ function renderRecordsList() {
       renderRecordsList();
     });
   }
+  const countEl = $('#selection-count');
+  if (countEl) countEl.textContent = `${selectedIds.size} selected`;
 }
 let searchDebounceTimer = null;
 $('#search-input').addEventListener('input', () => {
   clearTimeout(searchDebounceTimer);
   searchDebounceTimer = setTimeout(renderRecordsList, 200);
+});
+
+$('#btn-toggle-select-mode').addEventListener('click', () => {
+  selectMode = !selectMode;
+  if (!selectMode) selectedIds.clear();
+  $('#btn-toggle-select-mode').textContent = selectMode ? 'Cancel' : 'Select';
+  $('#selection-action-bar').hidden = !selectMode;
+  renderRecordsList._resetPage = false;
+  renderRecordsList();
+});
+
+$('#btn-select-since-last-export').addEventListener('click', () => {
+  const lastExportAt = localStorage.getItem(LAST_EXPORT_KEY);
+  const all = loadRecords();
+  const candidates = lastExportAt ? all.filter(r => new Date(r.createdAt) > new Date(lastExportAt)) : all;
+  if (candidates.length === 0) { toast(lastExportAt ? 'Nothing added since your last export' : 'No records on this device yet'); return; }
+  candidates.forEach(r => selectedIds.add(r.id));
+  renderRecordsList._resetPage = false;
+  renderRecordsList();
+  toast(`Selected ${candidates.length} record(s) added since your last export`);
+});
+
+$('#btn-export-selected').addEventListener('click', async () => {
+  if (selectedIds.size === 0) { toast('Select at least one record first'); return; }
+  const all = loadRecords();
+  const selected = all.filter(r => selectedIds.has(r.id));
+  const filename = exportFilename('json');
+  const payload = { exportedAt: new Date().toISOString(), source: 'ENBPA LLG App — Economic & MSME Survey', recordCount: selected.length, records: selected };
+  await shareOrDownloadFile(filename, JSON.stringify(payload, null, 2), 'application/json');
+  localStorage.setItem(LAST_EXPORT_KEY, new Date().toISOString());
+  toast(`${selected.length} record(s) ready to share`);
+  selectMode = false;
+  selectedIds.clear();
+  $('#btn-toggle-select-mode').textContent = 'Select';
+  $('#selection-action-bar').hidden = true;
+  renderRecordsList._resetPage = false;
+  renderRecordsList();
 });
 
 /* ------------------------------ records summary (all roles) ------------------------------ */
@@ -790,6 +843,7 @@ function renderRecordsSummary() {
   const byStatus = { formal: 0, informal: 0, none: 0 };
   let totalFormallyEmployed = 0, totalEmployedListed = 0, totalUnemployedListed = 0;
   const activityTally = {};
+  const informalActivityTally = {};
   let ipaYes = 0, ipaNo = 0, loanYes = 0, loanNo = 0, trainingYes = 0, trainingNo = 0;
   const trainingReqTally = {}, assistanceTally = {};
   const turnoverTally = {}; TURNOVER_BRACKETS.forEach(([c]) => turnoverTally[c] = 0);
@@ -823,6 +877,9 @@ function renderRecordsSummary() {
     if (r.economic.expensesBracket) expensesTally[r.economic.expensesBracket] = (expensesTally[r.economic.expensesBracket] || 0) + 1;
     FIXED_CROPS.forEach(c => { const d = r.cashCrops.fixed[c]; if (d) { cropTotals[c].blocks += Number(d.blocks) || 0; cropTotals[c].trees += Number(d.trees) || 0; } });
     informalEntryCount += (r.informal.entries || []).length;
+    (r.informal.entries || []).forEach(entry => {
+      if (entry.activityType) informalActivityTally[entry.activityType] = (informalActivityTally[entry.activityType] || 0) + 1;
+    });
   });
 
   const printHeader = `<div class="print-header"><div class="ph-row">
@@ -878,6 +935,8 @@ function renderRecordsSummary() {
   html += barBlockHTML('E. Monthly Expenses Bracket', EXPENSE_BRACKETS.map(([c, label]) => [label, expensesTally[c] || 0]));
   html += barBlockHTML('F. Cash Crop Totals (blocks)', FIXED_CROPS.map(c => [`${c} (${cropTotals[c].trees} trees)`, cropTotals[c].blocks]));
   html += reviewBlockHTML('G. Informal Sector', [['Total informal activities recorded', informalEntryCount]]);
+  const informalActivityList = tallyEntries(informalActivityTally).slice(0, 10);
+  if (informalActivityList.length) html += barBlockHTML('G. Informal Sector — Activity Types', informalActivityList);
   html += `<button class="btn btn-outline btn-full" id="btn-print-summary">Print / Save as PDF</button>`;
 
   container.innerHTML = html;
@@ -1538,6 +1597,7 @@ $('#btn-export-json').addEventListener('click', async () => {
   const filename = exportFilename('json');
   const payload = { exportedAt: new Date().toISOString(), source: 'ENBPA LLG App — Economic & MSME Survey', recordCount: all.length, records: all };
   await shareOrDownloadFile(filename, JSON.stringify(payload, null, 2), 'application/json');
+  localStorage.setItem(LAST_EXPORT_KEY, new Date().toISOString());
   toast('Ready to share — pick where to send it');
 });
 $('#btn-export-csv').addEventListener('click', async () => {
@@ -1545,7 +1605,28 @@ $('#btn-export-csv').addEventListener('click', async () => {
   if (all.length === 0) { toast('No records to export yet'); return; }
   const filename = exportFilename('csv');
   await shareOrDownloadFile(filename, recordsToCSV(all), 'text/csv');
+  localStorage.setItem(LAST_EXPORT_KEY, new Date().toISOString());
   toast('Ready to share — pick where to send it');
+});
+// Guaranteed-download versions, bypassing the share sheet entirely - for
+// older desktops/laptops without Bluetooth or any configured share targets,
+// where the share sheet may open but offer nothing useful.
+$('#btn-download-json').addEventListener('click', () => {
+  const all = loadRecords();
+  if (all.length === 0) { toast('No records to export yet'); return; }
+  const filename = exportFilename('json');
+  const payload = { exportedAt: new Date().toISOString(), source: 'ENBPA LLG App — Economic & MSME Survey', recordCount: all.length, records: all };
+  downloadFile(filename, JSON.stringify(payload, null, 2), 'application/json');
+  localStorage.setItem(LAST_EXPORT_KEY, new Date().toISOString());
+  toast('Saved to Downloads');
+});
+$('#btn-download-csv').addEventListener('click', () => {
+  const all = loadRecords();
+  if (all.length === 0) { toast('No records to export yet'); return; }
+  const filename = exportFilename('csv');
+  downloadFile(filename, recordsToCSV(all), 'text/csv');
+  localStorage.setItem(LAST_EXPORT_KEY, new Date().toISOString());
+  toast('Saved to Downloads');
 });
 
 // Turns an array of row-objects into one readable cell: "entry 1 | entry 2 | ..."
@@ -1636,18 +1717,19 @@ async function shareOrDownloadFile(filename, content, mime) {
   downloadFile(filename, content, mime);
 }
 
-// Asks who/which wards this export represents, purely for the filename - since
-// the same device is often shared across several enumerators in a session,
-// the device's own LLG assignment alone isn't enough to tell exports apart.
-function promptExportLabel() {
-  const raw = prompt("Whose entries are these, or which wards? (Optional - just makes the file name easier to tell apart later)");
+// Reads the optional label field directly (no popup) so nothing sits between
+// the tap and the share sheet opening - a prompt() in between would silently
+// break navigator.share(), since it requires being called very close to the
+// original user gesture with nothing else interrupting it first.
+function sanitizeLabel(raw) {
   if (!raw) return '';
   return raw.trim().replace(/[^a-zA-Z0-9 _-]/g, '').replace(/\s+/g, '_').slice(0, 40);
 }
 function exportFilename(ext) {
   const assigned = getAssignedLLG();
   const llgPart = assigned ? assigned.llg.replace(/\s+/g, '_') : 'export';
-  const label = promptExportLabel();
+  const labelInput = document.getElementById('export-label-input');
+  const label = sanitizeLabel(labelInput ? labelInput.value : '');
   return `enb-msme-${llgPart}${label ? '-' + label : ''}-${todayStr()}.${ext}`;
 }
 

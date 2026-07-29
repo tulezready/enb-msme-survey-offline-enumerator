@@ -1,4 +1,4 @@
-const CACHE_NAME = 'msme-survey-enum-v30';
+const CACHE_NAME = 'msme-survey-enum-v35';
 // Core shell: same-origin, must succeed, or the offline survey app itself breaks.
 const CORE_SHELL = [
   './index.html',
@@ -22,7 +22,14 @@ self.addEventListener('install', (event) => {
   event.waitUntil(
     (async () => {
       const cache = await caches.open(CACHE_NAME);
-      await cache.addAll(CORE_SHELL); // must succeed
+      // Each core file is fetched with {cache:'reload'} to bypass the
+      // browser's own HTTP cache, not just the service worker's cache -
+      // otherwise a new service worker version can still get populated with
+      // stale content the browser already had cached from an earlier visit.
+      await Promise.all(CORE_SHELL.map(async (url) => {
+        const response = await fetch(url, { cache: 'reload' });
+        await cache.put(url, response);
+      })); // must succeed
       try {
         await cache.addAll(EXTERNAL_SHELL); // best-effort, never blocks install
       } catch (err) {

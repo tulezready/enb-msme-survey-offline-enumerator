@@ -447,6 +447,12 @@ body.locked .topbar, body.locked .bottomnav{ display:none; }
   <div id="records-list-mode">
     <div class="search-bar">
       <input type="text" id="search-input" placeholder="Search household, village, business name…">
+      <button class="btn btn-outline" id="btn-toggle-select-mode" style="flex-shrink:0; padding:10px 14px;">Select</button>
+    </div>
+    <div id="selection-action-bar" hidden style="display:flex; align-items:center; gap:8px; background:var(--surface-2); border-radius:8px; padding:8px 10px; margin-bottom:10px;">
+      <span id="selection-count" style="font-size:12.5px; font-weight:600; flex:1;">0 selected</span>
+      <button class="btn btn-outline" id="btn-select-since-last-export" style="padding:7px 10px; font-size:12px;">Since last export</button>
+      <button class="btn btn-primary" id="btn-export-selected" style="padding:7px 12px; font-size:12px;">Export</button>
     </div>
     <div class="filter-chips" id="district-chips"></div>
     <div id="records-list-container"></div>
@@ -486,8 +492,16 @@ body.locked .topbar, body.locked .bottomnav{ display:none; }
   <div class="section-title">Send data to HQ</div>
   <div class="card">
     <p style="font-size:13.5px; color:var(--text-muted); margin-bottom:12px;">Alternative to the upload above — export a file and share it manually by email, USB, or Bluetooth.</p>
-    <button class="row-action" id="btn-export-json"><div class="icon">📤</div><div class="txt"><strong>Export all as JSON</strong><span>Full backup — for re-import into this app at HQ</span></div><div class="chev">›</div></button>
-    <button class="row-action" id="btn-export-csv"><div class="icon">📊</div><div class="txt"><strong>Export all as CSV</strong><span>Open in Excel / Google Sheets</span></div><div class="chev">›</div></button>
+    <label style="display:block; font-size:12.5px; font-weight:600; margin-bottom:5px;">Label for this export (optional)</label>
+    <input type="text" id="export-label-input" placeholder="e.g. your name, or which wards" style="width:100%; padding:10px 12px; border:1px solid var(--border); border-radius:8px; background:var(--surface); color:var(--text); margin-bottom:12px;">
+    <div style="display:flex; align-items:center; gap:8px; margin-bottom:8px;">
+      <button class="row-action" id="btn-export-json" style="flex:1; margin-bottom:0;"><div class="icon">📤</div><div class="txt"><strong>Export all as JSON</strong><span>Full backup — for re-import into this app at HQ</span></div><div class="chev">›</div></button>
+      <button class="btn btn-outline" id="btn-download-json" title="Save directly to Downloads, skipping the share menu entirely" style="flex-shrink:0; padding:10px 12px; font-size:12px;">⬇ Download</button>
+    </div>
+    <div style="display:flex; align-items:center; gap:8px;">
+      <button class="row-action" id="btn-export-csv" style="flex:1; margin-bottom:0;"><div class="icon">📊</div><div class="txt"><strong>Export all as CSV</strong><span>Open in Excel / Google Sheets</span></div><div class="chev">›</div></button>
+      <button class="btn btn-outline" id="btn-download-csv" title="Save directly to Downloads, skipping the share menu entirely" style="flex-shrink:0; padding:10px 12px; font-size:12px;">⬇ Download</button>
+    </div>
   </div>
 
   <div id="import-section">
