@@ -539,9 +539,8 @@ function renderDashboard() {
   let otherWardCount = 0;
   recordsCache.forEach(r => {
     const w = r.location && r.location.ward;
-    if (!w) return;
-    if (wardCounts.hasOwnProperty(w)) wardCounts[w]++;
-    else otherWardCount++;
+    if (w && wardCounts.hasOwnProperty(w)) wardCounts[w]++;
+    else otherWardCount++; // covers both a blank ward and a ward that doesn't match the official list
   });
   const wardsStarted = officialWards.filter(w => wardCounts[w] > 0).length;
 
