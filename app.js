@@ -1815,22 +1815,26 @@ function setOfflineStatus(ready, note) {
   if (dot) dot.style.background = ready ? '#8FD9A8' : '#F2C879';
   if (text) text.textContent = ready ? 'Ready offline' : 'Preparing…';
 
-  const icon = $('#offline-readiness-icon');
-  const title = $('#offline-readiness-title');
-  const desc = $('#offline-readiness-desc');
-  const card = $('#offline-readiness-card');
-  if (!icon) return;
-  if (ready) {
-    icon.textContent = '✅';
-    title.textContent = 'Ready to work offline';
-    desc.textContent = 'The app is fully cached on this device. Safe to switch off data now.';
-    card.style.borderColor = 'var(--success)';
-  } else {
-    icon.textContent = '⏳';
-    title.textContent = 'Not fully cached yet';
-    desc.textContent = note || 'Stay connected for a moment while the app finishes storing itself on this device.';
-    card.style.borderColor = 'var(--accent)';
-  }
+  const applyTo = (suffix) => {
+    const icon = $('#offline-readiness-icon' + suffix);
+    const title = $('#offline-readiness-title' + suffix);
+    const desc = $('#offline-readiness-desc' + suffix);
+    const card = $('#offline-readiness-card' + suffix);
+    if (!icon) return;
+    if (ready) {
+      icon.textContent = '✅';
+      title.textContent = 'Ready to work offline';
+      desc.textContent = 'The app is fully cached on this device. Safe to switch off data now.';
+      if (card) card.style.borderColor = 'var(--success)';
+    } else {
+      icon.textContent = '⏳';
+      title.textContent = 'Not fully cached yet';
+      desc.textContent = note || 'Stay connected for a moment while the app finishes storing itself on this device.';
+      if (card) card.style.borderColor = 'var(--accent)';
+    }
+  };
+  applyTo(''); // the original card, on the Transfer tab
+  applyTo('-home'); // the same status, front and center on Home - the one place a fresh install is guaranteed to be seen
 }
 
 /* ------------------------------- PIN lock screen ------------------------------- */

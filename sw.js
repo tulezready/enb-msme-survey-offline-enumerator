@@ -1,4 +1,4 @@
-const CACHE_NAME = 'msme-survey-enum-v36';
+const CACHE_NAME = 'msme-survey-enum-v37';
 // Core shell: same-origin, must succeed, or the offline survey app itself breaks.
 const CORE_SHELL = [
   './index.html',
@@ -18,6 +18,19 @@ const EXTERNAL_SHELL = [
   'https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2'
 ];
 
+async function fetchWithRetry(url, options, attempts = 3) {
+  let lastErr;
+  for (let i = 1; i <= attempts; i++) {
+    try {
+      return await fetch(url, options);
+    } catch (err) {
+      lastErr = err;
+      if (i < attempts) await new Promise(r => setTimeout(r, 800 * i)); // brief backoff before retrying
+    }
+  }
+  throw lastErr;
+}
+
 self.addEventListener('install', (event) => {
   event.waitUntil(
     (async () => {
@@ -26,8 +39,12 @@ self.addEventListener('install', (event) => {
       // browser's own HTTP cache, not just the service worker's cache -
       // otherwise a new service worker version can still get populated with
       // stale content the browser already had cached from an earlier visit.
+      // Retries a few times before giving up, since on a marginal rural
+      // connection a single transient failure on any one of these files
+      // used to silently abandon the entire install with no visible sign
+      // anything had gone wrong.
       await Promise.all(CORE_SHELL.map(async (url) => {
-        const response = await fetch(url, { cache: 'reload' });
+        const response = await fetchWithRetry(url, { cache: 'reload' });
         await cache.put(url, response);
       })); // must succeed
       try {
