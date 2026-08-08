@@ -491,6 +491,12 @@ body.locked .topbar, body.locked .bottomnav{ display:none; }
   <div class="card">
     <p style="font-size:13.5px; color:var(--text-muted); margin-bottom:12px;">Push your new records straight into the shared database whenever you have signal — no file, no email, no USB. Already-uploaded records won't be sent again.</p>
     <div class="review-line"><span class="k">Status</span><span class="v" id="upload-status">No records yet</span></div>
+    <div id="upload-progress-wrap" hidden style="margin-top:10px;">
+      <div style="background:var(--surface-2); border-radius:6px; height:10px; overflow:hidden;">
+        <div id="upload-progress-fill" style="background:var(--primary); height:100%; width:0%; transition:width .2s ease; border-radius:6px;"></div>
+      </div>
+      <div id="upload-progress-text" style="font-size:12px; color:var(--text-muted); margin-top:5px; text-align:center;">0 of 0 processed</div>
+    </div>
     <button class="btn btn-primary btn-full" style="margin-top:12px;" id="btn-upload-hq">Upload to HQ</button>
     <button class="btn btn-outline btn-full" style="margin-top:8px;" id="btn-resync-hq">Resync all with HQ</button>
     <p class="hint" style="margin-top:8px;">Only use Resync if HQ says a record you already sent is missing — it re-checks everything on this device, so it's slower than the regular upload above.</p>

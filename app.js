@@ -326,7 +326,20 @@ async function runUpload(records, label) {
   if (btn) btn.disabled = true;
   if (resyncBtn) resyncBtn.disabled = true;
   if (btn) btn.textContent = label;
-  let sentCount = 0, alreadyCount = 0, failCount = 0;
+
+  // Only worth showing a progress bar for a real batch - for one or two
+  // records the upload finishes before a bar would even register visually.
+  const showProgress = records.length >= 5;
+  const progressWrap = $('#upload-progress-wrap');
+  const progressFill = $('#upload-progress-fill');
+  const progressText = $('#upload-progress-text');
+  if (showProgress && progressWrap) {
+    progressWrap.hidden = false;
+    if (progressFill) progressFill.style.width = '0%';
+    if (progressText) progressText.textContent = `0 of ${records.length} processed`;
+  }
+
+  let sentCount = 0, alreadyCount = 0, failCount = 0, processedCount = 0;
   const now = new Date().toISOString();
   const touched = [];
   // Duplicate-ID conflict = HQ still has it (harmless no-op). No conflict =
@@ -353,7 +366,13 @@ async function runUpload(records, label) {
       console.error('Upload failed for', r.id, err);
       failCount++;
     }
+    processedCount++;
+    if (showProgress && progressFill) {
+      progressFill.style.width = Math.round((processedCount / records.length) * 100) + '%';
+      if (progressText) progressText.textContent = `${processedCount} of ${records.length} processed`;
+    }
   }
+  if (showProgress && progressWrap) progressWrap.hidden = true;
   // Only the records that actually changed get re-encrypted and rewritten —
   // not the whole local dataset, however large it's grown.
   await Promise.all(touched.map(r => upsertRecordLocal(r)));
