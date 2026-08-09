@@ -79,6 +79,20 @@ function getAssignedLLG() {
 function setAssignedLLG(district, llg) {
   localStorage.setItem(ASSIGNED_LLG_KEY, JSON.stringify({ district, llg }));
 }
+// The ward being actively worked through right now - set once per heap of
+// paper forms, reused automatically for every new survey until changed.
+// Cleared whenever the device's LLG assignment changes, since a ward from
+// the old LLG has no meaning under a different one.
+const ACTIVE_WARD_KEY = 'enb_msme_active_ward_v1';
+function getActiveWard() {
+  try { return JSON.parse(localStorage.getItem(ACTIVE_WARD_KEY)); } catch (e) { return null; }
+}
+function setActiveWard(ward) {
+  localStorage.setItem(ACTIVE_WARD_KEY, JSON.stringify({ ward, setAt: new Date().toISOString() }));
+}
+function clearActiveWard() {
+  localStorage.removeItem(ACTIVE_WARD_KEY);
+}
 // Used only for the one-time migration prompt on devices that already had
 // data before this feature existed — suggests (never assumes) an LLG based
 // on whatever's already been collected, so it's a confirm-tap, not blind entry.
@@ -407,12 +421,13 @@ function uid() {
 
 function newRecord() {
   const assigned = getAssignedLLG();
+  const activeWard = getActiveWard();
   return {
     id: uid(),
     createdAt: new Date().toISOString(),
     updatedAt: new Date().toISOString(),
     syncedAt: null, // set once this record has been uploaded to HQ
-    location: { district: (assigned && assigned.district) || '', llg: (assigned && assigned.llg) || '', village: '', ward: '', householdNo: '', dateCollected: todayStr(), contactPerson: '', mobile: '', postalAddress: '' },
+    location: { district: (assigned && assigned.district) || '', llg: (assigned && assigned.llg) || '', village: '', ward: (activeWard && activeWard.ward) || '', householdNo: '', dateCollected: todayStr(), contactPerson: '', mobile: '', postalAddress: '' },
     employment: { numFormallyEmployed: '', employedMembers: [], unemployedMembers: [], comments: '' },
     businessStatus: '', // 'formal' | 'informal' | 'none'
     business: {
@@ -506,8 +521,17 @@ $all('.bottomnav button').forEach(btn => {
   });
 });
 $('#btn-new-survey').addEventListener('click', startNewSurvey);
+$('#btn-change-ward').addEventListener('click', () => renderWardPickerScreen(false, () => toast('Active ward updated')));
 
 async function startNewSurvey() {
+  const assigned = getAssignedLLG();
+  const activeWard = getActiveWard();
+  if (assigned && (!activeWard || !activeWard.ward)) {
+    // No ward set yet on this LLG-locked device - must choose one before
+    // any new entry can begin. Re-runs this same function once confirmed.
+    renderWardPickerScreen(true, () => startNewSurvey());
+    return;
+  }
   const existingDraft = await readDraft();
   if (existingDraft && !editingExisting) {
     if (confirm('You have an unfinished survey saved on this device. Continue it? (Cancel starts a new blank survey)')) {
@@ -543,6 +567,8 @@ function editRecord(id) {
 
 /* ------------------------------- dashboard -------------------------------- */
 function renderDashboard() {
+  updateBrandLabel();
+  updateNewSurveyButtonLabel();
   recordsCache = loadRecords();
   $('#record-count-pill').textContent = recordsCache.length;
   $('#stat-total').textContent = recordsCache.length;
@@ -1148,6 +1174,10 @@ function renderStepA(el) {
       <label>LLG <span class="opt">(locked to this device)</span></label>
       <input type="text" value="${esc(draft.location.llg)}" disabled style="background:var(--surface-2); color:var(--text-muted);">
     </div>
+    <div class="field">
+      <label>Ward <span class="opt">(set on Home — use Change Ward there to switch heaps)</span></label>
+      <input type="text" value="${esc(draft.location.ward)}" disabled style="background:var(--surface-2); color:var(--text-muted);">
+    </div>
   ` : `
     <div class="field">
       <label>District</label>
@@ -1161,15 +1191,15 @@ function renderStepA(el) {
         ${llgOptionsHTML(draft.location.district, draft.location.llg)}
       </select>
     </div>
-  `;
-
-  el.innerHTML = `
-    ${locationHTML}
     <div class="field"><label>Ward</label>
       <select data-bind="location.ward" id="loc-ward-select">
         ${wardOptionsHTML(draft.location.llg, draft.location.ward)}
       </select>
     </div>
+  `;
+
+  el.innerHTML = `
+    ${locationHTML}
     <div class="field"><label>Village</label><input type="text" data-bind="location.village"></div>
     <div class="field-row">
       <div class="field"><label>Household No.</label><input type="text" data-bind="location.householdNo"></div>
@@ -2010,6 +2040,49 @@ async function attemptUnlockWithKey() {
 // data) before device-level LLG locking existed. Suggests an LLG based on
 // this device's own existing records where possible, but always requires
 // an explicit confirm tap — never silently assumes.
+// mandatory=true: no way out until a ward is picked (first-ever selection).
+// mandatory=false: switching wards mid-session, so Cancel is safe - it just
+// keeps whatever ward was already active.
+function renderWardPickerScreen(mandatory, onDone) {
+  const assigned = getAssignedLLG();
+  const current = getActiveWard();
+  const llg = assigned ? assigned.llg : '';
+  const c = $('#ward-picker-content');
+  c.innerHTML = `
+    <h3>${mandatory ? 'Which ward is this batch?' : 'Change Ward'}</h3>
+    <p class="lock-desc">${mandatory
+      ? 'Set once per heap of forms. Every new survey will use this ward automatically until you change it.'
+      : 'This updates every new survey going forward. Records already saved keep their original ward.'}</p>
+    <div class="field" style="text-align:left; margin-bottom:14px;">
+      <label style="display:block; font-size:12.5px; font-weight:600; margin-bottom:5px;">Ward in ${esc(llg)}</label>
+      <select id="ward-picker-select" style="width:100%; padding:11px 12px; border:1px solid var(--border); border-radius:8px; background:var(--surface);">
+        ${wardOptionsHTML(llg, current ? current.ward : '')}
+      </select>
+    </div>
+    <div class="lock-error" id="ward-picker-error"></div>
+    <button class="btn btn-primary btn-full" id="btn-confirm-ward">${mandatory ? 'Confirm & Continue' : 'Save'}</button>
+    ${mandatory ? '' : '<button type="button" class="lock-forgot" id="btn-cancel-ward-change">Cancel</button>'}
+  `;
+  $('#btn-confirm-ward').addEventListener('click', () => {
+    const ward = $('#ward-picker-select').value;
+    if (!ward) {
+      const errEl = $('#ward-picker-error');
+      if (errEl) errEl.textContent = 'Select a ward to continue.';
+      return;
+    }
+    setActiveWard(ward);
+    $('#ward-picker-screen').hidden = true;
+    updateBrandLabel();
+    updateNewSurveyButtonLabel();
+    if (onDone) onDone();
+  });
+  const cancelBtn = $('#btn-cancel-ward-change');
+  if (cancelBtn) cancelBtn.addEventListener('click', () => {
+    $('#ward-picker-screen').hidden = true;
+  });
+  $('#ward-picker-screen').hidden = false;
+}
+
 function renderConfirmLLGScreen() {
   const inferred = inferLLGFromRecords(recordsCache);
   const c = $('#lock-content');
@@ -2045,12 +2118,27 @@ function renderConfirmLLGScreen() {
   });
 }
 
+function updateBrandLabel() {
+  const assigned = getAssignedLLG();
+  const activeWard = getActiveWard();
+  const llgLabel = $('#brand-llg-label');
+  if (!llgLabel) return;
+  if (!assigned) { llgLabel.textContent = 'Economic & MSME Survey'; return; }
+  llgLabel.textContent = (activeWard && activeWard.ward) ? `${assigned.llg} — ${activeWard.ward}` : assigned.llg;
+}
+
+function updateNewSurveyButtonLabel() {
+  const btnLabel = $('#new-survey-label');
+  const changeSub = $('#change-ward-sub');
+  const activeWard = getActiveWard();
+  if (btnLabel) btnLabel.textContent = (activeWard && activeWard.ward) ? `Start new survey — ${activeWard.ward}` : 'Start new survey';
+  if (changeSub) changeSub.textContent = (activeWard && activeWard.ward) ? 'Switch to the next heap of forms' : 'No ward set yet — tap to choose one';
+}
+
 function finishUnlock() {
   $('#lock-screen').hidden = true;
   document.body.classList.remove('locked');
-  const assigned = getAssignedLLG();
-  const llgLabel = $('#brand-llg-label');
-  if (llgLabel) llgLabel.textContent = assigned ? assigned.llg : 'Economic & MSME Survey';
+  updateBrandLabel();
   renderDashboard();
 }
 
@@ -2143,11 +2231,12 @@ async function changeLLGAssignment() {
     const llg = $('#change-llg-select').value;
     if (!district || !llg) { showLockError('Select a District and LLG.'); return; }
     setAssignedLLG(district, llg);
+    clearActiveWard(); // the old active ward almost certainly doesn't belong to the newly assigned LLG
     $('#lock-screen').hidden = true;
     document.body.classList.remove('locked');
-    const llgLabel = $('#brand-llg-label');
-    if (llgLabel) llgLabel.textContent = llg;
-    toast('LLG assignment updated');
+    updateBrandLabel();
+    toast('LLG assignment updated — pick a ward before your next survey');
+    renderDashboard();
     renderTransfer();
   });
   $('#btn-cancel-llg-change').addEventListener('click', () => {

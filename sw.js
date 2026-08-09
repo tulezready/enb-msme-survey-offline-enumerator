@@ -1,4 +1,4 @@
-const CACHE_NAME = 'msme-survey-enum-v38';
+const CACHE_NAME = 'msme-survey-enum-v39';
 // Core shell: same-origin, must succeed, or the offline survey app itself breaks.
 const CORE_SHELL = [
   './index.html',

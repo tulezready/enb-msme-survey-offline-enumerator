@@ -402,6 +402,13 @@ body.locked .topbar, body.locked .bottomnav{ display:none; }
   </div>
 </div>
 
+<div id="ward-picker-screen" class="lock-screen" hidden>
+  <div class="lock-card">
+    <div class="lock-seal"><img src="logo.svg" alt="ENB logo"></div>
+    <div id="ward-picker-content"></div>
+  </div>
+</div>
+
 <div class="topbar">
   <div class="brand">
     <div class="seal"><img src="logo.svg" alt="ENBPA Division of Commerce & Industry logo"></div>
@@ -430,7 +437,12 @@ body.locked .topbar, body.locked .bottomnav{ display:none; }
 
   <button class="big-action" id="btn-new-survey">
     <div class="icon">📋</div>
-    <div class="txt"><strong>Start new survey</strong><span>Household economic &amp; MSME form</span></div>
+    <div class="txt"><strong id="new-survey-label">Start new survey</strong><span>Household economic &amp; MSME form</span></div>
+  </button>
+  <button class="row-action" id="btn-change-ward" style="margin-bottom:14px;">
+    <div class="icon">🔀</div>
+    <div class="txt"><strong>Change Ward</strong><span id="change-ward-sub">Switch to the next heap of forms</span></div>
+    <div class="chev">›</div>
   </button>
 
   <div class="section-title">Ward Coverage</div>
