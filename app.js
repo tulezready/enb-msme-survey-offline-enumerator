@@ -230,6 +230,14 @@ function idbPut(entry) {
     tx.onerror = () => reject(tx.error);
   }));
 }
+function idbGet(id) {
+  return openIDB().then(db => new Promise((resolve, reject) => {
+    const tx = db.transaction(IDB_STORE, 'readonly');
+    const req = tx.objectStore(IDB_STORE).get(id);
+    req.onsuccess = () => resolve(req.result || null);
+    req.onerror = () => reject(req.error);
+  }));
+}
 function idbDelete(id) {
   return openIDB().then(db => new Promise((resolve, reject) => {
     const tx = db.transaction(IDB_STORE, 'readwrite');
@@ -264,12 +272,39 @@ function idbClear() {
 function loadRecords() { return recordsCache; }
 
 // Save/update ONE record — the normal path for every survey saved in the field.
+// Writes a record, then immediately reads it back and decrypts it to prove
+// it actually landed intact. A half-written or corrupted entry gets caught
+// HERE - while the plaintext is still in memory and can simply be rewritten -
+// instead of silently sitting in storage and surfacing months later as a
+// device that won't open.
+async function saveRecordVerified(record, attempts = 2) {
+  let lastErr;
+  for (let i = 1; i <= attempts; i++) {
+    try {
+      const envelope = await encryptJSON(cryptoKey, record);
+      await idbPut({ id: record.id, envelope });
+      const back = await idbGet(record.id);
+      if (!back || !back.envelope) throw new Error('record missing immediately after write');
+      await decryptJSON(cryptoKey, back.envelope); // throws if what landed is unreadable
+      return true;
+    } catch (err) {
+      lastErr = err;
+      console.error(`Verified save attempt ${i}/${attempts} failed for ${record.id}:`, err);
+    }
+  }
+  throw lastErr;
+}
+
 function upsertRecordLocal(record) {
   const idx = recordsCache.findIndex(r => r.id === record.id);
   if (idx >= 0) recordsCache[idx] = record; else recordsCache.push(record);
-  encryptJSON(cryptoKey, record)
-    .then(envelope => idbPut({ id: record.id, envelope }))
-    .catch(err => { console.error('Save failed:', err); toast('Could not save — try again'); });
+  // Returns the promise so callers that await it actually wait - the old
+  // version returned undefined, so awaiting it was a no-op.
+  return saveRecordVerified(record)
+    .catch(err => {
+      console.error('Save failed:', err);
+      toast('Could not save this record — check Transfer, and re-open the record to try again');
+    });
 }
 // Remove ONE record locally (does not touch the shared database).
 function deleteRecordLocal(id) {
@@ -278,17 +313,60 @@ function deleteRecordLocal(id) {
 }
 // Bulk-replace everything — only used for PIN setup/migration and PIN change,
 // where every record genuinely does need re-encrypting under a new key.
+//
+// This previously called idbClear() FIRST and then rewrote every record. Any
+// interruption in that window - power loss, browser kill, storage error -
+// destroyed every record on the device with nothing left to recover. It now
+// never deletes anything until the replacements are written and verified.
 async function persistAllRecordsBulk(records) {
-  await idbClear();
-  await Promise.all(records.map(r => encryptJSON(cryptoKey, r).then(envelope => idbPut({ id: r.id, envelope }))));
+  // Encrypt everything up front. If this fails, storage is still untouched.
+  const envelopes = [];
+  for (const r of records) {
+    envelopes.push({ id: r.id, envelope: await encryptJSON(cryptoKey, r) });
+  }
+  // Overwrite in place by id - no clear, so there is never a moment where
+  // the device holds nothing.
+  for (const e of envelopes) {
+    await idbPut(e);
+    const back = await idbGet(e.id);
+    if (!back || !back.envelope) throw new Error(`record ${e.id} missing immediately after bulk write`);
+    await decryptJSON(cryptoKey, back.envelope); // prove it landed readable under the new key
+  }
+  // Only once everything new is safely stored, drop anything no longer wanted.
+  const keepIds = new Set(records.map(r => r.id));
+  const existing = await idbGetAll();
+  for (const e of existing) {
+    if (!keepIds.has(e.id)) await idbDelete(e.id);
+  }
 }
+// Decrypts every stored record, reporting per-entry outcomes rather than
+// failing the whole batch on a single bad row.
+//
+// This used to use Promise.all, which rejects if ANY one entry fails - so a
+// single damaged record (interrupted write, storage eviction, power loss
+// mid-save) made the entire unlock throw, and the caller reported it as
+// "Incorrect PIN" even though the PIN was perfectly correct. On a device
+// holding hundreds of records that is a catastrophic false alarm.
+//
+// The distinction that actually matters: a WRONG PIN fails EVERY entry,
+// while a damaged record fails only its own. The caller uses that.
 async function loadAllRecordsFromIDB() {
   const entries = await idbGetAll();
-  if (entries.length === 0) return [];
-  // No per-entry catch here on purpose: if the PIN is wrong, every decrypt
-  // fails and this must reject the whole unlock attempt, not silently
-  // return an empty list that looks like "no records yet".
-  return Promise.all(entries.map(e => decryptJSON(cryptoKey, e.envelope)));
+  if (entries.length === 0) return { records: [], total: 0, failed: 0 };
+  const settled = await Promise.allSettled(entries.map(e => decryptJSON(cryptoKey, e.envelope)));
+  const records = [];
+  let failed = 0;
+  settled.forEach((res, i) => {
+    if (res.status === 'fulfilled') {
+      records.push(res.value);
+    } else {
+      failed++;
+      // Left in place in IndexedDB, never deleted - unreadable today does
+      // not mean unrecoverable forever.
+      console.error('Record could not be decrypted (left untouched on device):', entries[i] && entries[i].id, res.reason);
+    }
+  });
+  return { records, total: entries.length, failed };
 }
 async function clearAllRecordsLocal() {
   await idbClear();
@@ -332,18 +410,19 @@ function recordToRow(r) {
     data: r
   };
 }
-async function runUpload(records, label) {
-  if (!sb) { toast('Upload needs a connection at least once to set up — try again when online'); return; }
-  if (records.length === 0) { toast('Nothing to upload'); return; }
-  const btn = $('#btn-upload-hq');
-  const resyncBtn = $('#btn-resync-hq');
+async function runUpload(records, label, opts = {}) {
+  const silent = !!opts.silent;
+  if (!sb) { if (!silent) toast('Upload needs a connection at least once to set up — try again when online'); return; }
+  if (records.length === 0) { if (!silent) toast('Nothing to upload'); return; }
+  const btn = silent ? null : $('#btn-upload-hq');
+  const resyncBtn = silent ? null : $('#btn-resync-hq');
   if (btn) btn.disabled = true;
   if (resyncBtn) resyncBtn.disabled = true;
   if (btn) btn.textContent = label;
 
   // Only worth showing a progress bar for a real batch - for one or two
   // records the upload finishes before a bar would even register visually.
-  const showProgress = records.length >= 5;
+  const showProgress = !silent && records.length >= 5;
   const progressWrap = $('#upload-progress-wrap');
   const progressFill = $('#upload-progress-fill');
   const progressText = $('#upload-progress-text');
@@ -391,13 +470,55 @@ async function runUpload(records, label) {
   // not the whole local dataset, however large it's grown.
   await Promise.all(touched.map(r => upsertRecordLocal(r)));
   renderTransfer();
+  renderDashboard(); // keeps the unsynced warning on Home accurate immediately
   if (btn) { btn.disabled = false; btn.textContent = 'Upload to HQ'; }
   if (resyncBtn) { resyncBtn.disabled = false; resyncBtn.textContent = 'Resync all with HQ'; }
   const parts = [];
   if (sentCount) parts.push(`${sentCount} sent`);
   if (alreadyCount) parts.push(`${alreadyCount} already at HQ`);
   if (failCount) parts.push(`${failCount} failed`);
-  toast(parts.length ? parts.join(' · ') : 'Nothing to upload');
+  if (silent) {
+    // Background upload: only speak up when something actually moved, so it
+    // never nags a device that had nothing pending.
+    if (sentCount) toast(`Auto-uploaded ${sentCount} record(s) to HQ`);
+  } else {
+    toast(parts.length ? parts.join(' · ') : 'Nothing to upload');
+  }
+}
+
+// Runs quietly whenever the app is unlocked or regains a connection. This is
+// the main protection against a device dying with weeks of work on it: the
+// window of unsynced data shrinks to roughly one session instead of however
+// long it takes someone to remember to press the button.
+let lastAutoUploadAttempt = 0;
+const AUTO_UPLOAD_MIN_GAP_MS = 60000;
+async function attemptAutoUpload(reason) {
+  try {
+    if (!sb || !cryptoKey) return;
+    if (typeof navigator !== 'undefined' && navigator.onLine === false) return;
+    // Triggers can fire in bursts (app resumed, connection flapping) - one
+    // attempt a minute is plenty and keeps a failing upload from looping.
+    if (Date.now() - lastAutoUploadAttempt < AUTO_UPLOAD_MIN_GAP_MS) return;
+    const pending = loadRecords().filter(r => !r.syncedAt);
+    if (pending.length === 0) return;
+    lastAutoUploadAttempt = Date.now();
+    console.log(`Auto-upload (${reason}): ${pending.length} pending record(s)`);
+    await runUpload(pending, 'Uploading…', { silent: true });
+  } catch (err) {
+    // Never let a background upload failure disrupt the app - the records
+    // stay queued and the next attempt picks them up.
+    console.error('Auto-upload attempt failed (records remain queued):', err);
+  }
+}
+
+// A field device coming back into signal is the single best moment to flush
+// whatever is queued, so listen for it rather than waiting for someone to
+// remember to press a button.
+if (typeof window !== 'undefined') {
+  window.addEventListener('online', () => setTimeout(() => attemptAutoUpload('connection restored'), 1500));
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'visible') attemptAutoUpload('app resumed');
+  });
 }
 
 // Default, fast path — only records never confirmed sent. This is what keeps
@@ -566,10 +687,110 @@ function editRecord(id) {
 }
 
 /* ------------------------------- dashboard -------------------------------- */
+// A device quietly holding weeks of unsynced work is the single biggest risk
+// in this whole system - if it breaks, that work is gone and someone has to
+// physically travel. This makes that situation impossible to overlook, and
+// escalates as it gets worse.
+function renderUnsyncWarning() {
+  const el = $('#unsync-warning');
+  if (!el) return;
+  const unsynced = recordsCache.filter(r => !r.syncedAt);
+  if (unsynced.length === 0) { el.hidden = true; el.innerHTML = ''; return; }
+
+  let oldestDays = 0;
+  unsynced.forEach(r => {
+    const t = new Date(r.createdAt).getTime();
+    if (!isNaN(t)) oldestDays = Math.max(oldestDays, Math.floor((Date.now() - t) / 86400000));
+  });
+
+  const severe = unsynced.length >= 50 || oldestDays >= 7;
+  const bg = severe ? 'var(--danger-light)' : 'var(--accent-light)';
+  const border = severe ? 'var(--danger)' : 'var(--accent)';
+  const color = severe ? 'var(--danger)' : '#8A4A05';
+  const headline = severe
+    ? `${unsynced.length} record(s) still not at HQ`
+    : `${unsynced.length} record(s) waiting to upload`;
+  const detail = oldestDays >= 1
+    ? `Oldest is ${oldestDays} day(s) old. If this device is lost or damaged, this work cannot be recovered.`
+    : 'Upload whenever you have signal so this work is safe at HQ.';
+
+  el.hidden = false;
+  el.innerHTML = `
+    <div style="background:${bg}; border:1px solid ${border}; border-radius:10px; padding:12px 14px; margin-bottom:14px;">
+      <strong style="display:block; font-size:14px; color:${color}; margin-bottom:3px;">${severe ? '⚠️ ' : ''}${esc(headline)}</strong>
+      <span style="font-size:12.5px; color:${color}; display:block; margin-bottom:10px;">${esc(detail)}</span>
+      <button class="btn btn-primary btn-full" id="btn-warning-upload" style="padding:9px;">Upload to HQ now</button>
+    </div>`;
+  const btn = $('#btn-warning-upload');
+  if (btn) btn.addEventListener('click', () => { switchView('transfer'); uploadToHQ(); });
+}
+
+// Retained from the last unlock so the health report can surface unreadable
+// records without needing to re-attempt a decrypt.
+let lastUnlockDamagedCount = 0;
+
+// Produces a plain-text technical summary that can be sent to the coordinator
+// over WhatsApp. Deliberately contains NO household data - only device state -
+// so it is safe to share over an ordinary messaging app.
+async function buildHealthReport() {
+  const assigned = getAssignedLLG();
+  const activeWard = getActiveWard();
+  const all = recordsCache || [];
+  const unsynced = all.filter(r => !r.syncedAt);
+
+  let oldestUnsyncedDays = 0;
+  unsynced.forEach(r => {
+    const t = new Date(r.createdAt).getTime();
+    if (!isNaN(t)) oldestUnsyncedDays = Math.max(oldestUnsyncedDays, Math.floor((Date.now() - t) / 86400000));
+  });
+
+  let lastSynced = null;
+  all.forEach(r => { if (r.syncedAt && (!lastSynced || r.syncedAt > lastSynced)) lastSynced = r.syncedAt; });
+
+  let storageLine = 'not reported by this browser';
+  try {
+    if (navigator.storage && navigator.storage.estimate) {
+      const est = await navigator.storage.estimate();
+      const usedMB = (est.usage / 1048576).toFixed(1);
+      const quotaMB = (est.quota / 1048576).toFixed(0);
+      const pct = est.quota ? ((est.usage / est.quota) * 100).toFixed(1) : '?';
+      storageLine = `${usedMB} MB used of ~${quotaMB} MB (${pct}%)`;
+    }
+  } catch (e) { storageLine = 'could not be read'; }
+
+  let idbCount = 'unknown';
+  try { idbCount = String((await idbGetAll()).length); } catch (e) { idbCount = 'could not be read'; }
+
+  const lines = [
+    'ENB MSME SURVEY — DEVICE HEALTH REPORT',
+    `Generated: ${new Date().toLocaleString('en-GB')}`,
+    '',
+    `Assigned LLG: ${assigned ? assigned.district + ' / ' + assigned.llg : 'NOT SET'}`,
+    `Active ward: ${activeWard && activeWard.ward ? activeWard.ward : 'NOT SET'}`,
+    '',
+    `Records readable: ${all.length}`,
+    `Records in storage: ${idbCount}`,
+    `Unreadable/damaged at last unlock: ${lastUnlockDamagedCount}`,
+    '',
+    `NOT yet uploaded to HQ: ${unsynced.length}`,
+    `Oldest unuploaded record: ${unsynced.length ? oldestUnsyncedDays + ' day(s) old' : 'n/a'}`,
+    `Most recent successful upload: ${lastSynced ? new Date(lastSynced).toLocaleString('en-GB') : 'never'}`,
+    '',
+    `Offline ready: ${offlineReady ? 'yes' : 'NO'}`,
+    `Currently online: ${navigator.onLine ? 'yes' : 'no'}`,
+    `App cache: ${(typeof APP_BUILD !== 'undefined') ? APP_BUILD : 'n/a'}`,
+    `Storage: ${storageLine}`,
+    '',
+    `Browser: ${navigator.userAgent}`
+  ];
+  return lines.join('\n');
+}
+
 function renderDashboard() {
   updateBrandLabel();
   updateNewSurveyButtonLabel();
   recordsCache = loadRecords();
+  renderUnsyncWarning();
   $('#record-count-pill').textContent = recordsCache.length;
   $('#stat-total').textContent = recordsCache.length;
   const weekAgo = Date.now() - 7 * 24 * 3600 * 1000;
@@ -1626,6 +1847,44 @@ function renderTransfer() {
 $('#btn-upload-hq').addEventListener('click', uploadToHQ);
 $('#btn-resync-hq').addEventListener('click', resyncAllWithHQ);
 $('#btn-lock-device').addEventListener('click', lockDevice);
+
+let lastHealthReportText = '';
+$('#btn-generate-health').addEventListener('click', async () => {
+  const out = $('#health-report-output');
+  const shareBtn = $('#btn-share-health');
+  out.hidden = false;
+  out.textContent = 'Generating…';
+  try {
+    lastHealthReportText = await buildHealthReport();
+    out.textContent = lastHealthReportText;
+    if (shareBtn) shareBtn.hidden = false;
+  } catch (err) {
+    console.error('Health report failed:', err);
+    out.textContent = 'Could not generate the report on this device.';
+  }
+});
+$('#btn-share-health').addEventListener('click', async () => {
+  if (!lastHealthReportText) return;
+  // Share sheet first (straight into WhatsApp), then clipboard, then a file -
+  // so this still works on an old office PC with nothing configured.
+  try {
+    if (navigator.share) {
+      await navigator.share({ title: 'ENB MSME Device Health Report', text: lastHealthReportText });
+      return;
+    }
+  } catch (err) {
+    if (err && err.name === 'AbortError') return; // user backed out deliberately
+  }
+  try {
+    await navigator.clipboard.writeText(lastHealthReportText);
+    toast('Report copied — paste it into WhatsApp or email');
+    return;
+  } catch (err) { /* fall through to a file */ }
+  const assigned = getAssignedLLG();
+  const llgPart = assigned ? assigned.llg.replace(/\s+/g, '_') : 'device';
+  downloadFile(`enb-msme-health-${llgPart}-${todayStr()}.txt`, lastHealthReportText, 'text/plain');
+  toast('Report saved to Downloads');
+});
 $('#btn-change-pin').addEventListener('click', changePin);
 $('#btn-change-llg').addEventListener('click', changeLLGAssignment);
 $('#btn-clear-all').addEventListener('click', () => {
@@ -2005,10 +2264,19 @@ async function handleUnlock(pin) {
 }
 
 async function attemptUnlockWithKey() {
+  let damagedCount = 0;
   try {
-    const idbRecords = await loadAllRecordsFromIDB();
-    if (idbRecords.length > 0) {
-      recordsCache = idbRecords;
+    const result = await loadAllRecordsFromIDB();
+    if (result.total > 0) {
+      // Every single entry failing means the key itself is wrong - that is a
+      // genuinely incorrect PIN.
+      if (result.records.length === 0) { cryptoKey = null; return false; }
+      // Otherwise the PIN is CORRECT: some records decrypted fine. Any that
+      // didn't are damaged rows, and must never lock someone out of the
+      // hundreds of good records sitting right next to them.
+      recordsCache = result.records;
+      damagedCount = result.failed;
+      lastUnlockDamagedCount = result.failed;
     } else {
       // No IndexedDB data yet — check for the old single-blob localStorage
       // scheme from a previous version of this app, and migrate it in once.
@@ -2032,6 +2300,12 @@ async function attemptUnlockWithKey() {
     renderConfirmLLGScreen(); // existing device, upgrading — one-time prompt before reaching the dashboard
   } else {
     finishUnlock();
+  }
+  // Never hide this. A skipped record is real survey work that isn't showing
+  // up, and whoever is holding the device needs to know before they assume
+  // their totals are complete.
+  if (damagedCount > 0) {
+    setTimeout(() => toast(`${damagedCount} record(s) on this device could not be read and were skipped — report this before erasing anything`), 700);
   }
   return true;
 }
@@ -2140,11 +2414,50 @@ function finishUnlock() {
   document.body.classList.remove('locked');
   updateBrandLabel();
   renderDashboard();
+  // Delayed so it never competes with the first render on a slow device.
+  setTimeout(() => attemptAutoUpload('app unlocked'), 2500);
 }
 
-function handleForgotPin() {
-  if (!confirm("This erases this device's PIN and ALL survey data stored on it — it can't be decrypted without the PIN anyway. This cannot be undone. Continue?")) return;
-  if (!confirm('Are you absolutely sure? All local records on this device will be permanently lost.')) return;
+async function handleForgotPin() {
+  // Even with no PIN, the encrypted records and the vault salt can still be
+  // written to a file. That turns "gone forever" into "recoverable if the
+  // PIN is ever remembered", so this button never destroys work outright.
+  let entryCount = 0;
+  try { entryCount = (await idbGetAll()).length; } catch (e) { /* fall through - handled below */ }
+
+  if (!confirm(`This device holds ${entryCount} record(s).\n\nA backup file of the encrypted data will be saved FIRST — it can only be opened again with the original PIN, but it means nothing is destroyed outright.\n\nContinue?`)) return;
+
+  let backupSaved = false;
+  try {
+    const entries = await idbGetAll();
+    if (entries.length > 0) {
+      const assigned = getAssignedLLG();
+      let vaultMeta = null;
+      try { vaultMeta = JSON.parse(localStorage.getItem(VAULT_META_KEY)); } catch (e) { vaultMeta = null; }
+      const payload = {
+        type: 'enb-msme-locked-vault-backup',
+        exportedAt: new Date().toISOString(),
+        note: 'Encrypted survey records from a device whose PIN was forgotten. These can be recovered ONLY with that original PIN. Keep this file safe and send it to the survey coordinator.',
+        vaultMeta, // salt + iterations - required for any future recovery
+        assignedLLG: assigned,
+        recordCount: entries.length,
+        entries
+      };
+      const llgPart = assigned ? assigned.llg.replace(/\s+/g, '_') : 'device';
+      downloadFile(`enb-msme-LOCKED-BACKUP-${llgPart}-${todayStr()}.json`, JSON.stringify(payload), 'application/json');
+      backupSaved = true;
+    }
+  } catch (err) {
+    console.error('Could not create locked backup:', err);
+  }
+
+  const finalWarning = backupSaved
+    ? 'Backup file saved to this device — send it to the coordinator before erasing.\n\nNow erase this device and start fresh?'
+    : (entryCount > 0
+        ? 'WARNING: the backup file could NOT be created. Erasing now means these records are gone permanently.\n\nErase anyway?'
+        : 'This device has no records stored. Erase and start fresh?');
+  if (!confirm(finalWarning)) return;
+
   localStorage.removeItem(VAULT_META_KEY);
   localStorage.removeItem(STORAGE_KEY);
   localStorage.removeItem(DRAFT_KEY);

@@ -421,6 +421,7 @@ body.locked .topbar, body.locked .bottomnav{ display:none; }
 </div>
 
 <div id="view-dashboard" class="view">
+  <div id="unsync-warning" hidden></div>
   <div class="card" id="offline-readiness-card-home" style="display:flex; align-items:center; gap:12px; margin-bottom:14px;">
     <div style="font-size:22px;" id="offline-readiness-icon-home">⏳</div>
     <div style="flex:1;">
@@ -541,6 +542,14 @@ body.locked .topbar, body.locked .bottomnav{ display:none; }
       </label>
       <div id="import-log" class="import-log" hidden></div>
     </div>
+  </div>
+
+  <div class="section-title">Device Health</div>
+  <div class="card">
+    <p style="font-size:13.5px; color:var(--text-muted); margin-bottom:12px;">If something looks wrong on this device, generate a report and send it to the survey coordinator. It contains no household details — only technical status.</p>
+    <div id="health-report-output" hidden class="import-log" style="margin-bottom:10px;"></div>
+    <button class="btn btn-outline btn-full" id="btn-generate-health">Generate Health Report</button>
+    <button class="btn btn-primary btn-full" id="btn-share-health" hidden style="margin-top:8px;">Share / Copy Report</button>
   </div>
 
   <div class="section-title">Device Assignment</div>
