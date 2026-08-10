@@ -7,6 +7,41 @@
 const STORAGE_KEY = 'enb_msme_records_v1';
 const DRAFT_KEY = 'enb_msme_draft_v1';
 const VAULT_META_KEY = 'enb_msme_vault_meta_v1';
+// The salt is required to turn a PIN back into the decryption key. It used to
+// live ONLY in localStorage while the records lived in IndexedDB - two stores
+// a browser can clear independently. Losing it meant the correct PIN could no
+// longer open the data, AND the app would show "Set up this device" as though
+// it were new, wiping the surviving records on completion.
+// It is now written to BOTH stores so it travels with the data it protects.
+const VAULT_META_IDB_ID = '__vault_meta__';
+async function saveVaultMeta(meta) {
+  const json = JSON.stringify(meta);
+  localStorage.setItem(VAULT_META_KEY, json);
+  try { await idbPut({ id: VAULT_META_IDB_ID, meta }); }
+  catch (err) { console.error('Could not mirror vault meta into IndexedDB:', err); }
+}
+// Reads the salt from wherever it survived, and repairs the missing copy.
+async function loadVaultMeta() {
+  let fromLocal = null;
+  try { fromLocal = JSON.parse(localStorage.getItem(VAULT_META_KEY)); } catch (e) { fromLocal = null; }
+  if (fromLocal && fromLocal.salt) {
+    try {
+      const mirrored = await idbGet(VAULT_META_IDB_ID);
+      if (!mirrored) await idbPut({ id: VAULT_META_IDB_ID, meta: fromLocal }); // heal the mirror
+    } catch (e) { /* mirroring is best-effort */ }
+    return fromLocal;
+  }
+  // localStorage lost it - recover from the copy stored with the records.
+  try {
+    const mirrored = await idbGet(VAULT_META_IDB_ID);
+    if (mirrored && mirrored.meta && mirrored.meta.salt) {
+      localStorage.setItem(VAULT_META_KEY, JSON.stringify(mirrored.meta)); // heal localStorage
+      console.warn('Vault salt was missing from localStorage and was recovered from IndexedDB.');
+      return mirrored.meta;
+    }
+  } catch (e) { console.error('Could not read mirrored vault meta:', e); }
+  return null;
+}
 const PBKDF2_ITERATIONS = 150000;
 const APP_ROLE = (document.body && document.body.dataset.role) || 'hq'; // 'hq' | 'enumerator'
 const DISTRICTS = ['Gazelle', 'Kokopo', 'Pomio', 'Rabaul'];
@@ -238,6 +273,13 @@ function idbGet(id) {
     req.onerror = () => reject(req.error);
   }));
 }
+// Every caller that wants RECORDS must use this, not idbGetAll directly -
+// the store also holds the mirrored vault meta, which is not a record and
+// must never be counted, decrypted, exported, or deleted as one.
+async function idbGetAllRecords() {
+  const all = await idbGetAll();
+  return all.filter(e => e && e.id !== VAULT_META_IDB_ID);
+}
 function idbDelete(id) {
   return openIDB().then(db => new Promise((resolve, reject) => {
     const tx = db.transaction(IDB_STORE, 'readwrite');
@@ -298,12 +340,14 @@ async function saveRecordVerified(record, attempts = 2) {
 function upsertRecordLocal(record) {
   const idx = recordsCache.findIndex(r => r.id === record.id);
   if (idx >= 0) recordsCache[idx] = record; else recordsCache.push(record);
-  // Returns the promise so callers that await it actually wait - the old
-  // version returned undefined, so awaiting it was a no-op.
+  // Returns true only if the record is verified in storage. Callers rely on
+  // this before discarding the draft, so it must never claim success it
+  // cannot prove.
   return saveRecordVerified(record)
+    .then(() => true)
     .catch(err => {
       console.error('Save failed:', err);
-      toast('Could not save this record — check Transfer, and re-open the record to try again');
+      return false;
     });
 }
 // Remove ONE record locally (does not touch the shared database).
@@ -318,7 +362,11 @@ function deleteRecordLocal(id) {
 // interruption in that window - power loss, browser kill, storage error -
 // destroyed every record on the device with nothing left to recover. It now
 // never deletes anything until the replacements are written and verified.
-async function persistAllRecordsBulk(records) {
+// pruneUnlisted defaults to FALSE deliberately. Records that failed to
+// decrypt are excluded from recordsCache on purpose, so treating "not in the
+// list" as "safe to delete" would permanently destroy exactly the damaged
+// records we go out of our way to preserve.
+async function persistAllRecordsBulk(records, opts = {}) {
   // Encrypt everything up front. If this fails, storage is still untouched.
   const envelopes = [];
   for (const r of records) {
@@ -332,11 +380,12 @@ async function persistAllRecordsBulk(records) {
     if (!back || !back.envelope) throw new Error(`record ${e.id} missing immediately after bulk write`);
     await decryptJSON(cryptoKey, back.envelope); // prove it landed readable under the new key
   }
-  // Only once everything new is safely stored, drop anything no longer wanted.
-  const keepIds = new Set(records.map(r => r.id));
-  const existing = await idbGetAll();
-  for (const e of existing) {
-    if (!keepIds.has(e.id)) await idbDelete(e.id);
+  if (opts.pruneUnlisted) {
+    const keepIds = new Set(records.map(r => r.id));
+    const existing = await idbGetAllRecords();
+    for (const e of existing) {
+      if (!keepIds.has(e.id)) await idbDelete(e.id);
+    }
   }
 }
 // Decrypts every stored record, reporting per-entry outcomes rather than
@@ -351,7 +400,7 @@ async function persistAllRecordsBulk(records) {
 // The distinction that actually matters: a WRONG PIN fails EVERY entry,
 // while a damaged record fails only its own. The caller uses that.
 async function loadAllRecordsFromIDB() {
-  const entries = await idbGetAll();
+  const entries = await idbGetAllRecords();
   if (entries.length === 0) return { records: [], total: 0, failed: 0 };
   const settled = await Promise.allSettled(entries.map(e => decryptJSON(cryptoKey, e.envelope)));
   const records = [];
@@ -759,7 +808,7 @@ async function buildHealthReport() {
   } catch (e) { storageLine = 'could not be read'; }
 
   let idbCount = 'unknown';
-  try { idbCount = String((await idbGetAll()).length); } catch (e) { idbCount = 'could not be read'; }
+  try { idbCount = String((await idbGetAllRecords()).length); } catch (e) { idbCount = 'could not be read'; }
 
   const lines = [
     'ENB MSME SURVEY — DEVICE HEALTH REPORT',
@@ -1793,7 +1842,7 @@ function renderStepReview(el) {
   el.innerHTML = html;
 }
 
-function saveDraftRecord() {
+async function saveDraftRecord() {
   const missing = [];
   if (!draft.location.district) missing.push('District');
   if (!draft.location.llg) missing.push('LLG');
@@ -1811,7 +1860,15 @@ function saveDraftRecord() {
     if (!proceed) return;
   }
   draft.updatedAt = new Date().toISOString();
-  upsertRecordLocal(draft);
+  // The draft is the only safety copy of this work. It must NOT be cleared
+  // until the record is confirmed written - the old code fired the save
+  // without waiting, deleted the draft immediately, and announced success,
+  // so a failed write lost the survey twice over.
+  const saved = await upsertRecordLocal(draft);
+  if (!saved) {
+    alert('This record could NOT be saved to the device.\n\nYour work has been kept as a draft — do not close the app. Try again, and if it keeps failing, generate a Health Report from the Transfer tab.');
+    return;
+  }
   clearDraft();
   stopAutosaveInterval();
   toast(editingExisting ? 'Record updated' : 'Record saved to this device');
@@ -1888,15 +1945,28 @@ $('#btn-share-health').addEventListener('click', async () => {
 $('#btn-change-pin').addEventListener('click', changePin);
 $('#btn-change-llg').addEventListener('click', changeLLGAssignment);
 $('#btn-clear-all').addEventListener('click', () => {
-  if (confirm('This will permanently erase ALL survey records on this device. Make sure you have exported and sent them to HQ first. Continue?')) {
-    if (confirm('Are you absolutely sure? This cannot be undone.')) {
-      clearAllRecordsLocal().then(() => {
-        clearDraft();
-        toast('All records erased');
-        renderTransfer();
-      }).catch(err => { console.error('Erase failed:', err); toast('Could not erase — try again'); });
-    }
+  // The app knows exactly how much of this has never reached HQ, so it should
+  // say so rather than leaving it to the person to remember.
+  const unsynced = recordsCache.filter(r => !r.syncedAt);
+  if (unsynced.length > 0) {
+    const proceed = confirm(
+      `STOP — ${unsynced.length} of the ${recordsCache.length} record(s) on this device have NEVER been uploaded to HQ.\n\n` +
+      `Erasing now destroys that work permanently. Nobody else has a copy.\n\n` +
+      `Press Cancel to go back and upload first (strongly recommended).`
+    );
+    if (!proceed) return;
+    const typed = prompt(`To confirm you accept losing ${unsynced.length} un-uploaded record(s), type ERASE below:`);
+    if (typed !== 'ERASE') { toast('Cancelled — nothing was erased'); return; }
+  } else if (!confirm(`This will permanently erase all ${recordsCache.length} record(s) on this device. All of them have been uploaded to HQ. Continue?`)) {
+    return;
   }
+  if (!confirm('Last chance — this cannot be undone. Erase this device now?')) return;
+  clearAllRecordsLocal().then(() => {
+    clearDraft();
+    toast('All records erased');
+    renderTransfer();
+    renderDashboard();
+  }).catch(err => { console.error('Erase failed:', err); toast('Could not erase — try again'); });
 });
 $('#btn-export-json').addEventListener('click', async () => {
   const all = loadRecords();
@@ -2044,7 +2114,7 @@ $('#import-file-input').addEventListener('change', (e) => {
   const file = e.target.files[0];
   if (!file) return;
   const reader = new FileReader();
-  reader.onload = () => {
+  reader.onload = async () => {
     const log = $('#import-log');
     try {
       const data = JSON.parse(reader.result);
@@ -2062,6 +2132,7 @@ $('#import-file-input').addEventListener('change', (e) => {
 
       const assigned = getAssignedLLG();
       let added = 0, updated = 0, rejected = 0;
+      const pendingWrites = [];
       const flaggedDuplicates = [];
 
       incoming.forEach(rec => {
@@ -2090,11 +2161,18 @@ $('#import-file-input').addEventListener('change', (e) => {
         } else {
           updated++;
         }
-        upsertRecordLocal(rec);
+        pendingWrites.push(upsertRecordLocal(rec));
       });
 
+      // Wait for every imported record to be verified in storage before
+      // reporting success - the old code announced "Import complete" while
+      // the writes were still in flight, so a failure was never surfaced.
+      const writeResults = await Promise.all(pendingWrites);
+      const writeFailures = writeResults.filter(ok => ok === false).length;
+
       log.hidden = false;
-      const parts = [`Import complete.`, `${added} new record(s) added.`, `${updated} existing record(s) updated.`];
+      const parts = [writeFailures > 0 ? `Import finished WITH ERRORS.` : `Import complete.`, `${added} new record(s) added.`, `${updated} existing record(s) updated.`];
+      if (writeFailures > 0) parts.push(`\u26a0 ${writeFailures} record(s) could NOT be saved to this device — re-import this file before deleting it.`);
       if (rejected > 0) parts.push(`${rejected} record(s) rejected — did not match this device's assigned LLG or were missing required data.`);
       if (flaggedDuplicates.length > 0) {
         parts.push(`\n⚠ ${flaggedDuplicates.length} possible duplicate household(s) — same Ward/Household No. as an existing record. Worth checking manually:`);
@@ -2216,10 +2294,22 @@ async function handleSetup(pin, confirmPin, legacyRecords, district, llg) {
   showLockError('');
   const salt = crypto.getRandomValues(new Uint8Array(16));
   const saltB64 = bytesToBase64(salt);
-  localStorage.setItem(VAULT_META_KEY, JSON.stringify({ salt: saltB64, iterations: PBKDF2_ITERATIONS, createdAt: new Date().toISOString() }));
+  // Derive the key, but do NOT commit the salt yet. Committing it before the
+  // records are safely stored would leave a device claiming a PIN it cannot
+  // actually open its data with - the same failure that used to brick a PIN
+  // change. The salt is only written once the data is verified in place.
   cryptoKey = await deriveKey(pin, saltB64, PBKDF2_ITERATIONS);
   recordsCache = legacyRecords || [];
-  await persistAllRecordsBulk(recordsCache);
+  try {
+    await persistAllRecordsBulk(recordsCache);
+  } catch (err) {
+    console.error('Setup failed while securing existing records:', err);
+    cryptoKey = null;
+    recordsCache = [];
+    showLockError('Could not secure this device\u2019s data. Nothing was changed — please try again.');
+    return;
+  }
+  await saveVaultMeta({ salt: saltB64, iterations: PBKDF2_ITERATIONS, createdAt: new Date().toISOString() });
   if (legacyRecords && legacyRecords.length) localStorage.removeItem(STORAGE_KEY); // old single-blob storage no longer used
   setAssignedLLG(district, llg);
   finishUnlock();
@@ -2244,7 +2334,7 @@ async function handleUnlock(pin) {
   }
   if (!pin) { showLockError('Enter your PIN.'); return; }
   let meta;
-  try { meta = JSON.parse(localStorage.getItem(VAULT_META_KEY)); } catch (e) { meta = null; }
+  meta = await loadVaultMeta();
   if (!meta) { showLockError('Vault info missing on this device.'); return; }
   showLockError('');
   cryptoKey = await deriveKey(pin, meta.salt, meta.iterations);
@@ -2282,11 +2372,21 @@ async function attemptUnlockWithKey() {
       // scheme from a previous version of this app, and migrate it in once.
       const raw = localStorage.getItem(STORAGE_KEY);
       if (raw) {
+        // If this decrypt succeeds, the PIN is PROVEN correct. Anything that
+        // fails after this point is a storage problem, not a wrong PIN, and
+        // must not be reported as one.
         const legacy = await decryptJSON(cryptoKey, JSON.parse(raw));
         recordsCache = Array.isArray(legacy) ? legacy : [];
         if (recordsCache.length) {
-          await persistAllRecordsBulk(recordsCache);
-          localStorage.removeItem(STORAGE_KEY);
+          try {
+            await persistAllRecordsBulk(recordsCache);
+            localStorage.removeItem(STORAGE_KEY); // only drop the original once the copy is verified
+          } catch (err) {
+            console.error('Legacy migration could not be saved (original left untouched):', err);
+            // Records are decrypted and usable for this session; the original
+            // blob stays exactly where it is so the next unlock can retry.
+            setTimeout(() => toast('Records loaded, but this device could not save them in the new format — report this'), 700);
+          }
         }
       } else {
         recordsCache = [];
@@ -2423,17 +2523,17 @@ async function handleForgotPin() {
   // written to a file. That turns "gone forever" into "recoverable if the
   // PIN is ever remembered", so this button never destroys work outright.
   let entryCount = 0;
-  try { entryCount = (await idbGetAll()).length; } catch (e) { /* fall through - handled below */ }
+  try { entryCount = (await idbGetAllRecords()).length; } catch (e) { /* fall through - handled below */ }
 
   if (!confirm(`This device holds ${entryCount} record(s).\n\nA backup file of the encrypted data will be saved FIRST — it can only be opened again with the original PIN, but it means nothing is destroyed outright.\n\nContinue?`)) return;
 
   let backupSaved = false;
   try {
-    const entries = await idbGetAll();
+    const entries = await idbGetAllRecords();
     if (entries.length > 0) {
       const assigned = getAssignedLLG();
       let vaultMeta = null;
-      try { vaultMeta = JSON.parse(localStorage.getItem(VAULT_META_KEY)); } catch (e) { vaultMeta = null; }
+      vaultMeta = await loadVaultMeta();
       const payload = {
         type: 'enb-msme-locked-vault-backup',
         exportedAt: new Date().toISOString(),
@@ -2459,6 +2559,7 @@ async function handleForgotPin() {
   if (!confirm(finalWarning)) return;
 
   localStorage.removeItem(VAULT_META_KEY);
+  try { await idbDelete(VAULT_META_IDB_ID); } catch (e) { /* store is being cleared anyway */ }
   localStorage.removeItem(STORAGE_KEY);
   localStorage.removeItem(DRAFT_KEY);
   clearPinFailState();
@@ -2478,37 +2579,71 @@ function lockDevice() {
 
 async function changePin() {
   let meta;
-  try { meta = JSON.parse(localStorage.getItem(VAULT_META_KEY)); } catch (e) { meta = null; }
+  meta = await loadVaultMeta();
   if (!meta) { toast('No PIN set on this device yet'); return; }
+
+  // Records that failed to decrypt cannot be re-encrypted under a new key.
+  // Changing the PIN now would leave them permanently unreadable, so refuse
+  // and send the problem to someone who can look at it first.
+  if (lastUnlockDamagedCount > 0) {
+    alert(`This device has ${lastUnlockDamagedCount} record(s) that could not be read.\n\nChanging the PIN now would make them permanently unrecoverable.\n\nGenerate a Health Report and send it to the coordinator before changing the PIN.`);
+    return;
+  }
+
   const currentPin = prompt('Enter your current PIN:');
   if (currentPin == null) return;
+  let oldKey;
   try {
-    const testKey = await deriveKey(currentPin, meta.salt, meta.iterations);
-    const entries = await idbGetAll();
-    if (entries.length > 0) await decryptJSON(testKey, entries[0].envelope); // verify against one real entry, if any exist
+    oldKey = await deriveKey(currentPin, meta.salt, meta.iterations);
+    const entries = await idbGetAllRecords();
+    if (entries.length > 0) await decryptJSON(oldKey, entries[0].envelope); // verify against one real entry, if any exist
   } catch (e) { toast('Current PIN is incorrect'); return; }
   const newPin = prompt('Enter a new PIN (4–8 digits):');
   if (newPin == null) return;
   if (!/^\d{4,8}$/.test(newPin)) { toast('PIN must be 4–8 digits'); return; }
   const confirmNew = prompt('Confirm new PIN:');
   if (confirmNew !== newPin) { toast('PINs did not match — PIN not changed'); return; }
+
   const newSalt = crypto.getRandomValues(new Uint8Array(16));
   const newSaltB64 = bytesToBase64(newSalt);
-  cryptoKey = await deriveKey(newPin, newSaltB64, PBKDF2_ITERATIONS);
-  localStorage.setItem(VAULT_META_KEY, JSON.stringify({ salt: newSaltB64, iterations: PBKDF2_ITERATIONS, createdAt: meta.createdAt, changedAt: new Date().toISOString() }));
-  await persistAllRecordsBulk(recordsCache);
+  const newKey = await deriveKey(newPin, newSaltB64, PBKDF2_ITERATIONS);
+  const snapshot = recordsCache.slice(); // plaintext, still in memory - the rollback source
+
+  // Re-encrypt and verify EVERY record under the new key before the new salt
+  // is committed anywhere. Committing the salt first (as this used to) meant
+  // a failure midway left the salt saying "new" while records were still
+  // under the old key - a device that rejects its own correct PIN forever.
+  cryptoKey = newKey;
+  try {
+    await persistAllRecordsBulk(snapshot);
+  } catch (err) {
+    console.error('PIN change failed while re-encrypting — rolling back:', err);
+    cryptoKey = oldKey;
+    try {
+      await persistAllRecordsBulk(snapshot); // restore every record under the original key
+      toast('PIN was NOT changed — your old PIN still works');
+    } catch (rollbackErr) {
+      console.error('Rollback also failed:', rollbackErr);
+      alert('The PIN change failed and could not be fully undone.\n\nDo NOT erase this device. Generate a Health Report from the Transfer tab and send it to the coordinator immediately.');
+    }
+    return;
+  }
+
+  // Every record is now readable under the new key - only now is it safe to
+  // commit the new salt.
+  await saveVaultMeta({ salt: newSaltB64, iterations: PBKDF2_ITERATIONS, createdAt: meta.createdAt, changedAt: new Date().toISOString() });
   toast('PIN changed');
 }
 
 async function changeLLGAssignment() {
   let meta;
-  try { meta = JSON.parse(localStorage.getItem(VAULT_META_KEY)); } catch (e) { meta = null; }
+  meta = await loadVaultMeta();
   if (!meta) { toast('No PIN set on this device yet'); return; }
   const currentPin = prompt("Enter your PIN to change this device's LLG assignment:");
   if (currentPin == null) return;
   try {
     const testKey = await deriveKey(currentPin, meta.salt, meta.iterations);
-    const entries = await idbGetAll();
+    const entries = await idbGetAllRecords();
     if (entries.length > 0) await decryptJSON(testKey, entries[0].envelope);
   } catch (e) { toast('PIN is incorrect'); return; }
 
@@ -2567,23 +2702,77 @@ function renderUnsupportedScreen() {
   `;
 }
 
-function initLockScreen() {
+async function initLockScreen() {
   $('#lock-screen').hidden = false;
   document.body.classList.add('locked');
   if (typeof indexedDB === 'undefined') {
     renderUnsupportedScreen();
     return;
   }
-  const vaultMetaRaw = localStorage.getItem(VAULT_META_KEY);
-  let legacyRecords = null;
-  if (!vaultMetaRaw) {
-    try {
-      const parsed = JSON.parse(localStorage.getItem(STORAGE_KEY));
-      if (Array.isArray(parsed)) legacyRecords = parsed;
-    } catch (e) {}
+  // Reads from localStorage, falling back to the copy mirrored alongside the
+  // records, and repairs whichever one went missing.
+  const meta = await loadVaultMeta();
+  if (meta && meta.salt) { renderUnlockForm(); return; }
+
+  // No salt anywhere. Before offering setup, check whether this device is
+  // actually still holding encrypted records - because setup would delete
+  // them, and a device with data is NOT a fresh device.
+  let strandedCount = 0;
+  try { strandedCount = (await idbGetAllRecords()).length; } catch (e) { strandedCount = 0; }
+  if (strandedCount > 0) {
+    renderStrandedVaultScreen(strandedCount);
+    return;
   }
-  if (vaultMetaRaw) renderUnlockForm();
-  else renderSetupForm(legacyRecords ? legacyRecords.length : 0, legacyRecords);
+
+  let legacyRecords = null;
+  try {
+    const parsed = JSON.parse(localStorage.getItem(STORAGE_KEY));
+    if (Array.isArray(parsed)) legacyRecords = parsed;
+  } catch (e) {}
+  renderSetupForm(legacyRecords ? legacyRecords.length : 0, legacyRecords);
+}
+
+// Shown when encrypted records exist but the salt that unlocks them is gone
+// from both stores. Deliberately offers NO "set up anyway" button - the only
+// safe action is to preserve the data and get help.
+function renderStrandedVaultScreen(count) {
+  const c = $('#lock-content');
+  c.innerHTML = `
+    <h3>Do not erase this device</h3>
+    <div class="lock-warn" style="text-align:left;">
+      This device still holds <strong>${count} encrypted record(s)</strong>, but the key information needed to unlock them is missing from this browser's storage.
+      <br><br>
+      This can happen if browsing data was cleared, or if the browser is signed into a different profile than before.
+    </div>
+    <p class="lock-desc" style="text-align:left;">
+      <strong>What to do now:</strong><br>
+      1. Save the backup file below and send it to the survey coordinator.<br>
+      2. If this browser has more than one profile, try switching back to the one used before — the key may still be there.<br>
+      3. Do not clear browsing data or reinstall until the coordinator has the file.
+    </p>
+    <button class="btn btn-primary btn-full" id="btn-save-stranded">Save Backup File</button>
+  `;
+  $('#btn-save-stranded').addEventListener('click', async () => {
+    try {
+      const entries = await idbGetAllRecords();
+      const assigned = getAssignedLLG();
+      const payload = {
+        type: 'enb-msme-stranded-vault',
+        exportedAt: new Date().toISOString(),
+        note: 'Encrypted records from a device whose vault key went missing from browser storage. Recovery requires the original PIN AND the salt, which was not found on this device.',
+        vaultMeta: null,
+        assignedLLG: assigned,
+        recordCount: entries.length,
+        entries
+      };
+      const llgPart = assigned ? assigned.llg.replace(/\s+/g, '_') : 'device';
+      downloadFile(`enb-msme-STRANDED-${llgPart}-${todayStr()}.json`, JSON.stringify(payload), 'application/json');
+      toast('Backup saved — send it to the coordinator');
+    } catch (err) {
+      console.error('Could not save stranded vault:', err);
+      toast('Could not save the backup file');
+    }
+  });
 }
 
 /* -------------------------------- boot -------------------------------- */
