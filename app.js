@@ -14,6 +14,24 @@ const VAULT_META_KEY = 'enb_msme_vault_meta_v1';
 // it were new, wiping the surviving records on completion.
 // It is now written to BOTH stores so it travels with the data it protects.
 const VAULT_META_IDB_ID = '__vault_meta__';
+// A known plaintext encrypted with the vault key. This is what makes a PIN
+// checkable ON ITS OWN. Without it the app could only infer correctness from
+// whether records decrypted - so a device with NO records accepted ANY PIN,
+// and anything then entered was encrypted under that wrong key, making the
+// real PIN fail forever afterwards.
+const VAULT_VERIFIER_PLAINTEXT = 'ENB_MSME_VAULT_VERIFIER_v1';
+async function makeVaultVerifier(key) {
+  return await encryptJSON(key, VAULT_VERIFIER_PLAINTEXT);
+}
+async function verifyKeyAgainstVault(key, meta) {
+  if (!meta || !meta.verifier) return null; // legacy vault - cannot be checked this way
+  try {
+    const value = await decryptJSON(key, meta.verifier);
+    return value === VAULT_VERIFIER_PLAINTEXT;
+  } catch (e) {
+    return false;
+  }
+}
 async function saveVaultMeta(meta) {
   const json = JSON.stringify(meta);
   localStorage.setItem(VAULT_META_KEY, json);
@@ -2309,7 +2327,7 @@ async function handleSetup(pin, confirmPin, legacyRecords, district, llg) {
     showLockError('Could not secure this device\u2019s data. Nothing was changed — please try again.');
     return;
   }
-  await saveVaultMeta({ salt: saltB64, iterations: PBKDF2_ITERATIONS, createdAt: new Date().toISOString() });
+  await saveVaultMeta({ salt: saltB64, iterations: PBKDF2_ITERATIONS, createdAt: new Date().toISOString(), verifier: await makeVaultVerifier(cryptoKey) });
   if (legacyRecords && legacyRecords.length) localStorage.removeItem(STORAGE_KEY); // old single-blob storage no longer used
   setAssignedLLG(district, llg);
   finishUnlock();
@@ -2338,7 +2356,23 @@ async function handleUnlock(pin) {
   if (!meta) { showLockError('Vault info missing on this device.'); return; }
   showLockError('');
   cryptoKey = await deriveKey(pin, meta.salt, meta.iterations);
-  const ok = await attemptUnlockWithKey();
+  const ok = await attemptUnlockWithKey(meta);
+  if (ok === 'NEEDS_REESTABLISH') {
+    // Legacy vault, no verifier, no records - the PIN cannot be checked
+    // against anything. Confirm it deliberately so this device is properly
+    // protected from now on. No data exists yet, so nothing is at risk.
+    const confirmPin = prompt('This device needs its PIN confirmed before it can be used.\n\nRe-enter your PIN:');
+    if (confirmPin !== pin) {
+      cryptoKey = null;
+      showLockError('PINs did not match. Try again.');
+      return;
+    }
+    await saveVaultMeta(Object.assign({}, meta, { verifier: await makeVaultVerifier(cryptoKey) }));
+    recordsCache = [];
+    clearPinFailState();
+    if (!getAssignedLLG()) renderConfirmLLGScreen(); else finishUnlock();
+    return;
+  }
   if (ok) {
     clearPinFailState();
   } else {
@@ -2353,8 +2387,15 @@ async function handleUnlock(pin) {
   }
 }
 
-async function attemptUnlockWithKey() {
+async function attemptUnlockWithKey(meta) {
   let damagedCount = 0;
+  // FIRST: check the PIN directly against the vault verifier. This is the
+  // only check that works regardless of how many records exist. Without it,
+  // a device with zero records accepted ANY PIN - and every survey entered
+  // afterwards was encrypted under that wrong key.
+  const verified = await verifyKeyAgainstVault(cryptoKey, meta);
+  if (verified === false) { cryptoKey = null; return false; }
+
   try {
     const result = await loadAllRecordsFromIDB();
     if (result.total > 0) {
@@ -2367,6 +2408,19 @@ async function attemptUnlockWithKey() {
       recordsCache = result.records;
       damagedCount = result.failed;
       lastUnlockDamagedCount = result.failed;
+      // Legacy vault with no verifier: real records just proved this PIN is
+      // correct, so record that fact permanently.
+      if (verified === null && meta) {
+        try {
+          await saveVaultMeta(Object.assign({}, meta, { verifier: await makeVaultVerifier(cryptoKey) }));
+          console.log('Vault verifier added to this device.');
+        } catch (e) { console.error('Could not add vault verifier:', e); }
+      }
+    } else if (verified === null) {
+      // Legacy vault, no verifier AND no records - nothing can prove this PIN
+      // is right. Refusing outright would strand the device, so re-establish
+      // the vault deliberately instead. There is no data at risk here.
+      return 'NEEDS_REESTABLISH';
     } else {
       // No IndexedDB data yet — check for the old single-blob localStorage
       // scheme from a previous version of this app, and migrate it in once.
@@ -2631,7 +2685,7 @@ async function changePin() {
 
   // Every record is now readable under the new key - only now is it safe to
   // commit the new salt.
-  await saveVaultMeta({ salt: newSaltB64, iterations: PBKDF2_ITERATIONS, createdAt: meta.createdAt, changedAt: new Date().toISOString() });
+  await saveVaultMeta({ salt: newSaltB64, iterations: PBKDF2_ITERATIONS, createdAt: meta.createdAt, changedAt: new Date().toISOString(), verifier: await makeVaultVerifier(newKey) });
   toast('PIN changed');
 }
 
