@@ -230,6 +230,43 @@ function base64ToBytes(b64) {
   for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
   return bytes;
 }
+// THE single place a PIN is checked. Every caller must go through this.
+// The wrong-PIN failures all came from this check being reimplemented in
+// several places, and two of those copies silently skipped verification
+// whenever the device happened to hold no records.
+//
+// Returns { ok: true|false|null, key }.
+//   true  - PIN proven correct
+//   false - PIN proven wrong
+//   null  - nothing on this device can prove it either way (legacy vault,
+//           no verifier, no records). Caller decides; no data is at risk.
+async function checkPinCorrect(pin, meta) {
+  if (!meta || !meta.salt) return { ok: false, key: null };
+  const key = await deriveKey(pin, meta.salt, meta.iterations || PBKDF2_ITERATIONS);
+
+  const viaVerifier = await verifyKeyAgainstVault(key, meta);
+  if (viaVerifier === true) return { ok: true, key };
+  if (viaVerifier === false) return { ok: false, key: null };
+
+  // Legacy vault with no verifier - prove it against real data instead.
+  try {
+    const entries = await idbGetAllRecords();
+    if (entries.length > 0) {
+      try { await decryptJSON(key, entries[0].envelope); return { ok: true, key }; }
+      catch (e) { return { ok: false, key: null }; }
+    }
+    const raw = localStorage.getItem(STORAGE_KEY);
+    if (raw) {
+      try { await decryptJSON(key, JSON.parse(raw)); return { ok: true, key }; }
+      catch (e) { return { ok: false, key: null }; }
+    }
+  } catch (e) {
+    console.error('Could not read storage while checking PIN:', e);
+    return { ok: false, key: null };
+  }
+  return { ok: null, key };
+}
+
 async function deriveKey(pin, saltB64, iterations) {
   const enc = new TextEncoder();
   const salt = base64ToBytes(saltB64);
@@ -2355,7 +2392,7 @@ async function handleUnlock(pin) {
   meta = await loadVaultMeta();
   if (!meta) { showLockError('Vault info missing on this device.'); return; }
   showLockError('');
-  cryptoKey = await deriveKey(pin, meta.salt, meta.iterations);
+  cryptoKey = await deriveKey(pin, meta.salt, meta.iterations || PBKDF2_ITERATIONS);
   const ok = await attemptUnlockWithKey(meta);
   if (ok === 'NEEDS_REESTABLISH') {
     // Legacy vault, no verifier, no records - the PIN cannot be checked
@@ -2416,14 +2453,11 @@ async function attemptUnlockWithKey(meta) {
           console.log('Vault verifier added to this device.');
         } catch (e) { console.error('Could not add vault verifier:', e); }
       }
-    } else if (verified === null) {
-      // Legacy vault, no verifier AND no records - nothing can prove this PIN
-      // is right. Refusing outright would strand the device, so re-establish
-      // the vault deliberately instead. There is no data at risk here.
-      return 'NEEDS_REESTABLISH';
     } else {
-      // No IndexedDB data yet — check for the old single-blob localStorage
-      // scheme from a previous version of this app, and migrate it in once.
+      // No IndexedDB records. Check the old single-blob localStorage scheme
+      // BEFORE concluding there is nothing to verify against - decrypting it
+      // proves the PIN, and skipping straight to re-establish would let a
+      // typo'd PIN be locked in, stranding this data permanently.
       const raw = localStorage.getItem(STORAGE_KEY);
       if (raw) {
         // If this decrypt succeeds, the PIN is PROVEN correct. Anything that
@@ -2442,6 +2476,17 @@ async function attemptUnlockWithKey(meta) {
             setTimeout(() => toast('Records loaded, but this device could not save them in the new format — report this'), 700);
           }
         }
+        // That decrypt proved the PIN - record it so this device never has to
+        // rely on guesswork again.
+        if (verified === null && meta) {
+          try { await saveVaultMeta(Object.assign({}, meta, { verifier: await makeVaultVerifier(cryptoKey) })); }
+          catch (e) { console.error('Could not add vault verifier:', e); }
+        }
+      } else if (verified === null) {
+        // Genuinely nothing on this device and no verifier - nothing can
+        // prove this PIN is right. Refusing outright would strand the device,
+        // so re-establish the vault deliberately. No data is at risk here.
+        return 'NEEDS_REESTABLISH';
       } else {
         recordsCache = [];
       }
@@ -2646,12 +2691,9 @@ async function changePin() {
 
   const currentPin = prompt('Enter your current PIN:');
   if (currentPin == null) return;
-  let oldKey;
-  try {
-    oldKey = await deriveKey(currentPin, meta.salt, meta.iterations);
-    const entries = await idbGetAllRecords();
-    if (entries.length > 0) await decryptJSON(oldKey, entries[0].envelope); // verify against one real entry, if any exist
-  } catch (e) { toast('Current PIN is incorrect'); return; }
+  const check = await checkPinCorrect(currentPin, meta);
+  if (check.ok === false) { toast('Current PIN is incorrect'); return; }
+  const oldKey = check.key;
   const newPin = prompt('Enter a new PIN (4–8 digits):');
   if (newPin == null) return;
   if (!/^\d{4,8}$/.test(newPin)) { toast('PIN must be 4–8 digits'); return; }
@@ -2695,11 +2737,8 @@ async function changeLLGAssignment() {
   if (!meta) { toast('No PIN set on this device yet'); return; }
   const currentPin = prompt("Enter your PIN to change this device's LLG assignment:");
   if (currentPin == null) return;
-  try {
-    const testKey = await deriveKey(currentPin, meta.salt, meta.iterations);
-    const entries = await idbGetAllRecords();
-    if (entries.length > 0) await decryptJSON(testKey, entries[0].envelope);
-  } catch (e) { toast('PIN is incorrect'); return; }
+  const check = await checkPinCorrect(currentPin, meta);
+  if (check.ok === false) { toast('PIN is incorrect'); return; }
 
   const current = getAssignedLLG();
   $('#lock-screen').hidden = false;
