@@ -1217,6 +1217,7 @@ function renderRecordsSummary() {
   const trainingReqTally = {}, assistanceTally = {};
   const turnoverTally = {}; TURNOVER_BRACKETS.forEach(([c]) => turnoverTally[c] = 0);
   const expensesTally = {}; EXPENSE_BRACKETS.forEach(([c]) => expensesTally[c] = 0);
+  let turnoverSum = 0, turnoverCount = 0, expensesSum = 0, expensesCount = 0;
   const cropTotals = {}; FIXED_CROPS.forEach(c => cropTotals[c] = { blocks: 0, trees: 0 });
   let informalEntryCount = 0;
 
@@ -1244,6 +1245,10 @@ function renderRecordsSummary() {
     (r.development.assistanceRequired || []).forEach(t => { assistanceTally[t] = (assistanceTally[t] || 0) + 1; });
     if (r.economic.turnoverBracket) turnoverTally[r.economic.turnoverBracket] = (turnoverTally[r.economic.turnoverBracket] || 0) + 1;
     if (r.economic.expensesBracket) expensesTally[r.economic.expensesBracket] = (expensesTally[r.economic.expensesBracket] || 0) + 1;
+    const turnoverVal = parseFloat(r.economic.turnoverAmount);
+    if (!isNaN(turnoverVal) && turnoverVal >= 0) { turnoverSum += turnoverVal; turnoverCount++; }
+    const expensesVal = parseFloat(r.economic.expensesAmount);
+    if (!isNaN(expensesVal) && expensesVal >= 0) { expensesSum += expensesVal; expensesCount++; }
     FIXED_CROPS.forEach(c => { const d = r.cashCrops.fixed[c]; if (d) { cropTotals[c].blocks += Number(d.blocks) || 0; cropTotals[c].trees += Number(d.trees) || 0; } });
     informalEntryCount += (r.informal.entries || []).length;
     (r.informal.entries || []).forEach(entry => {
@@ -1302,6 +1307,16 @@ function renderRecordsSummary() {
   if (assistanceList.length) html += barBlockHTML('Assistance Required (demand)', assistanceList, { accent: true });
   html += barBlockHTML('E. Monthly Turnover Bracket', TURNOVER_BRACKETS.map(([c, label]) => [label, turnoverTally[c] || 0]));
   html += barBlockHTML('E. Monthly Expenses Bracket', EXPENSE_BRACKETS.map(([c, label]) => [label, expensesTally[c] || 0]));
+  html += `<div class="review-block card">
+    <h4>E. Actual Amounts Reported (K)</h4>
+    <p style="font-size:12px; color:var(--text-muted); margin-bottom:10px;">From the specific amount entered alongside each bracket selection — not every record includes one.</p>
+    <div class="stat-grid" style="grid-template-columns:repeat(2,1fr);">
+      <div class="stat-card"><div class="num">K${turnoverSum.toLocaleString()}</div><div class="lbl">Total turnover<br><span style="font-weight:400; font-size:10.5px;">${turnoverCount} record(s) with an amount</span></div></div>
+      <div class="stat-card"><div class="num">${turnoverCount > 0 ? 'K' + Math.round(turnoverSum / turnoverCount).toLocaleString() : '—'}</div><div class="lbl">Average turnover</div></div>
+      <div class="stat-card"><div class="num">K${expensesSum.toLocaleString()}</div><div class="lbl">Total expenses<br><span style="font-weight:400; font-size:10.5px;">${expensesCount} record(s) with an amount</span></div></div>
+      <div class="stat-card"><div class="num">${expensesCount > 0 ? 'K' + Math.round(expensesSum / expensesCount).toLocaleString() : '—'}</div><div class="lbl">Average expenses</div></div>
+    </div>
+  </div>`;
   html += barBlockHTML('F. Cash Crop Totals (blocks)', FIXED_CROPS.map(c => [`${c} (${cropTotals[c].trees} trees)`, cropTotals[c].blocks]));
   html += reviewBlockHTML('G. Informal Sector', [['Total informal activities recorded', informalEntryCount]]);
   const informalActivityList = tallyEntries(informalActivityTally).slice(0, 10);
