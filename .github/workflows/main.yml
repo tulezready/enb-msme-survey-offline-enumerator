@@ -1,0 +1,27 @@
+# Keeps the ENB MSME Survey Supabase project active by making a real,
+# lightweight database query once a day - well within the 7-day inactivity
+# window Supabase uses before pausing a free-tier project.
+#
+# This calls get_public_survey_stats(), the same function the public
+# insights site uses. It's read-only, requires no authentication, and
+# returns only safe aggregate totals - nothing sensitive, and nothing
+# that could accidentally modify data.
+name: Keep Supabase Active
+
+on:
+  schedule:
+    - cron: '0 0 * * *'   # once a day, midnight UTC
+  workflow_dispatch:        # also allows manually clicking "Run workflow" to test it
+
+jobs:
+  ping-database:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Ping Supabase
+        run: |
+          curl -s -o /dev/null -w "HTTP status: %{http_code}\n" \
+            "https://lgfdzxcawggxrqvsgzpz.supabase.co/rest/v1/rpc/get_public_survey_stats" \
+            -X POST \
+            -H "apikey: sb_publishable_cX_rXW51KpL-k9arZupk9w_6MS9Jlo_" \
+            -H "Content-Type: application/json" \
+            -d "{}"
