@@ -1212,6 +1212,12 @@ function renderRecordsSummary() {
   const byStatus = { formal: 0, informal: 0, none: 0 };
   let totalFormallyEmployed = 0, totalEmployedListed = 0, totalUnemployedListed = 0;
   const activityTally = {};
+  // othersSpecify is free text, so grouped by a trimmed/lowercased key to
+  // avoid fragmenting the same real activity into near-duplicates over
+  // casing or stray whitespace - the same approach used in HQ's summary.
+  // Tracks every original casing seen per key, so the most common exact
+  // wording can be shown as the representative label.
+  const otherActivityTally = {};
   const informalActivityTally = {};
   let ipaYes = 0, ipaNo = 0, loanYes = 0, loanNo = 0, trainingYes = 0, trainingNo = 0;
   const trainingReqTally = {}, assistanceTally = {};
@@ -1238,6 +1244,12 @@ function renderRecordsSummary() {
     totalUnemployedListed += r.employment.unemployedMembers.length;
 
     Object.values(r.business.activities).forEach(v => { if (Array.isArray(v)) v.forEach(item => { activityTally[item] = (activityTally[item] || 0) + 1; }); });
+    const otherRaw = r.business.activities.othersSpecify;
+    if (otherRaw && otherRaw.trim()) {
+      const key = otherRaw.trim().toLowerCase();
+      if (!otherActivityTally[key]) otherActivityTally[key] = {};
+      otherActivityTally[key][otherRaw] = (otherActivityTally[key][otherRaw] || 0) + 1;
+    }
     if (r.business.ipaRegistered === 'Yes') ipaYes++; else if (r.business.ipaRegistered === 'No') ipaNo++;
     if (r.business.loanAccess === 'Yes') loanYes++; else if (r.business.loanAccess === 'No') loanNo++;
     if (r.development.trainingAttended === 'Yes') trainingYes++; else if (r.development.trainingAttended === 'No') trainingNo++;
@@ -1294,6 +1306,21 @@ function renderRecordsSummary() {
   ]);
   const topActivities = tallyEntries(activityTally).slice(0, 10);
   if (topActivities.length) html += barBlockHTML('C. Top Business Activities', topActivities);
+  const otherActivitiesResolved = Object.values(otherActivityTally).map(variants => {
+    let bestText = '', bestCount = 0, total = 0;
+    Object.entries(variants).forEach(([text, count]) => {
+      total += count;
+      if (count > bestCount) { bestCount = count; bestText = text; }
+    });
+    return [bestText, total];
+  }).sort((a, b) => b[1] - a[1]);
+  if (otherActivitiesResolved.length) {
+    html += `<div class="review-block card">
+      <h4>C. "Others" Specified</h4>
+      <p style="font-size:12px; color:var(--text-muted); margin-bottom:10px;">Free-text entries from the "Others (specify)" field, grouped where the same activity was described in slightly different words.</p>
+      ${otherActivitiesResolved.map(([label, count]) => `<div class="review-line"><span class="k">${esc(label)}</span><span class="v">${count}</span></div>`).join('')}
+    </div>`;
+  }
   html += barBlockHTML('C. IPA Registration & Loans', [
     ['IPA registered — Yes', ipaYes], ['IPA registered — No', ipaNo],
     ['Loan access — Yes', loanYes], ['Loan access — No', loanNo]
