@@ -515,29 +515,35 @@ body.locked .topbar, body.locked .bottomnav{ display:none; }
     <p class="hint" style="margin-top:8px;">Only use Resync if HQ says a record you already sent is missing — it re-checks everything on this device, so it's slower than the regular upload above.</p>
   </div>
 
-  <div class="section-title">Send data to HQ</div>
+  <div class="section-title">Back Up This LLG's Records</div>
+  <div class="card" style="border:1.5px solid var(--primary); background:var(--primary-light);">
+    <p style="font-size:13.5px; margin-bottom:12px;"><strong>Save a safety copy of every record on this device.</strong> Keep that copy somewhere safe — a USB drive, not left on this same device. If this device is ever lost, broken, or stops working, you can bring your LLG's records back using this file, on any working device — no need to contact PHQ.</p>
+    <button class="row-action" id="btn-backup-llg" style="margin-bottom:0; background:var(--primary); color:#fff;"><div class="icon">💾</div><div class="txt"><strong style="color:#fff;">Save My Backup Now</strong><span style="color:rgba(255,255,255,0.8);">Saves a copy of everything on this device</span></div><div class="chev" style="color:#fff;">›</div></button>
+  </div>
+
+  <div class="section-title">Send Records to HQ (manual)</div>
   <div class="card">
-    <p style="font-size:13.5px; color:var(--text-muted); margin-bottom:12px;">Alternative to the upload above — export a file and share it manually by email, USB, or Bluetooth.</p>
+    <p style="font-size:13.5px; color:var(--text-muted); margin-bottom:12px;">Alternative to the automatic upload above — export a file and share it manually by email, USB, or Bluetooth.</p>
     <label style="display:block; font-size:12.5px; font-weight:600; margin-bottom:5px;">Label for this export (optional)</label>
     <input type="text" id="export-label-input" placeholder="e.g. your name, or which wards" style="width:100%; padding:10px 12px; border:1px solid var(--border); border-radius:8px; background:var(--surface); color:var(--text); margin-bottom:12px;">
     <div style="display:flex; align-items:center; gap:8px; margin-bottom:8px;">
-      <button class="row-action" id="btn-export-json" style="flex:1; margin-bottom:0;"><div class="icon">📤</div><div class="txt"><strong>Export all as JSON</strong><span>Full backup — for re-import into this app at HQ</span></div><div class="chev">›</div></button>
+      <button class="row-action" id="btn-export-json" style="flex:1; margin-bottom:0;"><div class="icon">📤</div><div class="txt"><strong>Send All Records to HQ</strong><span>Share the file with HQ by WhatsApp, email, or USB</span></div><div class="chev">›</div></button>
       <button class="btn btn-outline" id="btn-download-json" title="Save directly to Downloads, skipping the share menu entirely" style="flex-shrink:0; padding:10px 12px; font-size:12px;">⬇ Download</button>
     </div>
     <div style="display:flex; align-items:center; gap:8px;">
-      <button class="row-action" id="btn-export-csv" style="flex:1; margin-bottom:0;"><div class="icon">📊</div><div class="txt"><strong>Export all as CSV</strong><span>Open in Excel / Google Sheets</span></div><div class="chev">›</div></button>
+      <button class="row-action" id="btn-export-csv" style="flex:1; margin-bottom:0;"><div class="icon">📊</div><div class="txt"><strong>Save as Spreadsheet</strong><span>Opens in Excel or Google Sheets</span></div><div class="chev">›</div></button>
       <button class="btn btn-outline" id="btn-download-csv" title="Save directly to Downloads, skipping the share menu entirely" style="flex-shrink:0; padding:10px 12px; font-size:12px;">⬇ Download</button>
     </div>
   </div>
 
   <div id="import-section">
-    <div class="section-title">Combine Team Entries</div>
+    <div class="section-title">Add Records From a File</div>
     <div class="card">
-      <p style="font-size:13.5px; color:var(--text-muted); margin-bottom:12px;">If other enumerators entered part of the paper forms on their own devices, bring their exported files in here to build one complete record for this LLG. Only records matching this device's assigned LLG are accepted — anything else is rejected automatically.</p>
+      <p style="font-size:13.5px; color:var(--text-muted); margin-bottom:12px;">Use this to bring records into this device — either restoring your own backup file, or adding in another enumerator's work from their device. Only records for this device's own LLG will ever be added; anything else is rejected automatically.</p>
       <label class="file-drop" for="import-file-input">
         <div style="font-size:26px; margin-bottom:6px;">📥</div>
-        <div><strong>Tap to choose a .json file</strong></div>
-        <div class="hint">Only files exported from this app</div>
+        <div><strong>Tap here, then choose the file</strong></div>
+        <div class="hint">Only files saved from this app (backup files or another device's export)</div>
         <input type="file" id="import-file-input" accept="application/json,.json">
       </label>
       <div id="import-log" class="import-log" hidden></div>

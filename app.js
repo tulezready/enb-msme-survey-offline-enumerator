@@ -2069,6 +2069,16 @@ $('#btn-clear-all').addEventListener('click', () => {
     renderDashboard();
   }).catch(err => { console.error('Erase failed:', err); toast('Could not erase — try again'); });
 });
+$('#btn-backup-llg').addEventListener('click', async () => {
+  const all = loadRecords();
+  if (all.length === 0) { toast('No records to back up yet'); return; }
+  const assigned = getAssignedLLG();
+  const llgPart = assigned ? assigned.llg.replace(/\s+/g, '_') : 'device';
+  const filename = `BACKUP-${llgPart}-${todayStr()}.json`;
+  const payload = { exportedAt: new Date().toISOString(), source: 'ENBPA LLG App — Economic & MSME Survey (Backup)', recordCount: all.length, records: all };
+  await shareOrDownloadFile(filename, JSON.stringify(payload, null, 2), 'application/json');
+  toast('Backup saved — keep it somewhere safe, off this device');
+});
 $('#btn-export-json').addEventListener('click', async () => {
   const all = loadRecords();
   if (all.length === 0) { toast('No records to export yet'); return; }
