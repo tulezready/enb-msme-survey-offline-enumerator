@@ -410,6 +410,98 @@ function deleteRecordLocal(id) {
   recordsCache = recordsCache.filter(r => r.id !== id);
   idbDelete(id).catch(err => console.error('Local delete failed:', err));
 }
+
+// Mirrors HQ's Data Quality checks exactly, but computed entirely from the
+// records already sitting on this device - no server round-trip, since the
+// whole point is catching problems BEFORE upload, including for a device
+// that's been offline the whole time it was collecting. Same safe-casting
+// discipline as the SQL versions: a malformed value gets excluded, never
+// crashes the check.
+function computeDataQualityIssues(records) {
+  const missingStatusByWard = {};
+  const negativeCashCrops = [];
+  const turnoverMismatches = [];
+  const expensesMismatches = [];
+  let missingDate = 0, missingVillage = 0;
+  const wardUsage = {};
+
+  const turnoverInRange = (bracket, amount) => {
+    if (bracket === 'a') return amount <= 60000;
+    if (bracket === 'b') return amount > 60000 && amount <= 250000;
+    if (bracket === 'c') return amount > 250000 && amount <= 5000000;
+    if (bracket === 'd') return amount > 5000000;
+    return true;
+  };
+  const expensesInRange = (bracket, amount) => {
+    if (bracket === '1') return amount <= 5000;
+    if (bracket === '2') return amount > 5000 && amount <= 250000;
+    if (bracket === '3') return amount > 250000 && amount <= 500000;
+    if (bracket === '4') return amount > 500000;
+    return true;
+  };
+
+  records.forEach(r => {
+    const ward = (r.location && r.location.ward) || '';
+    if (!r.businessStatus) {
+      missingStatusByWard[ward] = (missingStatusByWard[ward] || 0) + 1;
+    }
+    if (ward) wardUsage[ward] = (wardUsage[ward] || 0) + 1;
+    if (!r.location || !r.location.dateCollected) missingDate++;
+    if (!r.location || !r.location.village) missingVillage++;
+
+    const fixed = (r.cashCrops && r.cashCrops.fixed) || {};
+    Object.entries(fixed).forEach(([crop, cd]) => {
+      if (!cd) return;
+      const blocks = parseFloat(cd.blocks);
+      const trees = parseFloat(cd.trees);
+      if (!isNaN(blocks) && blocks < 0) negativeCashCrops.push({ id: r.id, ward, householdNo: r.location && r.location.householdNo, crop, field: 'blocks', value: cd.blocks });
+      if (!isNaN(trees) && trees < 0) negativeCashCrops.push({ id: r.id, ward, householdNo: r.location && r.location.householdNo, crop, field: 'trees', value: cd.trees });
+    });
+
+    if (r.economic) {
+      const tBracket = r.economic.turnoverBracket;
+      const tAmount = parseFloat(r.economic.turnoverAmount);
+      if (tBracket && !isNaN(tAmount) && String(r.economic.turnoverAmount).trim() !== '' && !turnoverInRange(tBracket, tAmount)) {
+        turnoverMismatches.push({ id: r.id, ward, bracket: tBracket, amount: tAmount });
+      }
+      const eBracket = r.economic.expensesBracket;
+      const eAmount = parseFloat(r.economic.expensesAmount);
+      if (eBracket && !isNaN(eAmount) && String(r.economic.expensesAmount).trim() !== '' && !expensesInRange(eBracket, eAmount)) {
+        expensesMismatches.push({ id: r.id, ward, bracket: eBracket, amount: eAmount });
+      }
+    }
+  });
+
+  // Ward mismatch uses the exact same WARDS_BY_LLG official list the ward
+  // picker itself uses - never duplicated, single source of truth.
+  const assigned = getAssignedLLG ? getAssignedLLG() : null;
+  const officialWards = assigned ? (WARDS_BY_LLG[assigned.llg] || []) : [];
+  const wardMismatches = Object.entries(wardUsage)
+    .filter(([w]) => officialWards.length > 0 && !officialWards.includes(w))
+    .map(([ward, count]) => ({ ward, count }));
+
+  const missingStatusTotal = Object.values(missingStatusByWard).reduce((a, b) => a + b, 0);
+
+  return {
+    missingStatus: { total: missingStatusTotal, byWard: Object.entries(missingStatusByWard).map(([ward, count]) => ({ ward, count })) },
+    negativeCashCrops, turnoverMismatches, expensesMismatches, wardMismatches,
+    missingDate, missingVillage
+  };
+}
+
+// Same evidence-based check as HQ's bulk fix tool: only suggests "None" when
+// the record's OWN existing data already shows it - cash crop data present
+// (asked regardless of status) but nothing at all from the formal or
+// informal sections. Never a guess.
+function suggestedStatusFor(r) {
+  const hasInformalEntries = r.informal && Array.isArray(r.informal.entries) && r.informal.entries.length > 0;
+  const hasFormalFields = (r.business && (r.business.name || r.business.ipaRegistered)) || (r.economic && r.economic.turnoverBracket);
+  const hasCashCropData = (r.cashCrops && r.cashCrops.comments) ||
+    (r.cashCrops && r.cashCrops.fixed && Object.values(r.cashCrops.fixed).some(cd => cd && (cd.blocks || cd.trees)));
+  if (!hasInformalEntries && !hasFormalFields && hasCashCropData) return 'none';
+  return null;
+}
+
 // Bulk-replace everything — only used for PIN setup/migration and PIN change,
 // where every record genuinely does need re-encrypting under a new key.
 //
@@ -722,17 +814,18 @@ function stopAutosaveInterval() {
 function switchView(view) {
   currentView = view;
   if (view !== 'wizard') stopAutosaveInterval();
-  ['dashboard', 'records', 'wizard', 'detail', 'transfer'].forEach(v => {
+  ['dashboard', 'records', 'wizard', 'detail', 'transfer', 'dataquality'].forEach(v => {
     $('#view-' + v).hidden = (v !== view);
   });
   $all('.bottomnav button').forEach(b => b.classList.remove('active'));
-  const map = { dashboard: 'dashboard', records: 'records', wizard: 'wizard-new', detail: 'records', transfer: 'transfer' };
+  const map = { dashboard: 'dashboard', records: 'records', wizard: 'wizard-new', detail: 'records', transfer: 'transfer', dataquality: 'transfer' };
   const navBtn = $all('.bottomnav button').find(b => b.dataset.view === map[view]);
   if (navBtn) navBtn.classList.add('active');
   window.scrollTo(0, 0);
   if (view === 'dashboard') renderDashboard();
   if (view === 'records') renderRecordsList();
   if (view === 'transfer') renderTransfer();
+  if (view === 'dataquality') renderDataQuality();
 }
 
 $all('.bottomnav button').forEach(btn => {
@@ -2001,10 +2094,121 @@ function renderTransfer() {
   const assigned = getAssignedLLG();
   const assignedEl = $('#assigned-llg-display');
   if (assignedEl) assignedEl.textContent = assigned ? `${assigned.llg} (${assigned.district})` : 'Not set';
+
+  // Quick at-a-glance summary right where the upload decision actually
+  // happens - the whole point is catching problems before that tap, not
+  // after.
+  const dq = computeDataQualityIssues(recordsCache);
+  const dqTotal = dq.missingStatus.total + dq.negativeCashCrops.length + dq.turnoverMismatches.length + dq.expensesMismatches.length + dq.wardMismatches.length + dq.missingDate + dq.missingVillage;
+  const dqCard = $('#dataquality-summary-card');
+  if (dqCard) {
+    dqCard.innerHTML = dqTotal === 0
+      ? `<div style="display:flex; align-items:center; gap:10px;"><div style="font-size:20px;">✅</div><div><strong style="font-size:14px;">No issues found</strong><div style="font-size:12px; color:var(--text-muted);">Records look ready to upload</div></div></div>`
+      : `<div style="display:flex; align-items:center; gap:10px;"><div style="font-size:20px;">⚠️</div><div style="flex:1;"><strong style="font-size:14px;">${dqTotal} record(s) worth a look</strong><div style="font-size:12px; color:var(--text-muted);">Review before uploading</div></div><button class="btn btn-outline btn-sm" id="btn-open-dataquality">Review</button></div>`;
+    const openBtn = $('#btn-open-dataquality');
+    if (openBtn) openBtn.addEventListener('click', () => switchView('dataquality'));
+  }
 }
 $('#btn-upload-hq').addEventListener('click', uploadToHQ);
 $('#btn-resync-hq').addEventListener('click', resyncAllWithHQ);
 $('#btn-lock-device').addEventListener('click', lockDevice);
+$('#btn-dataquality-back').addEventListener('click', () => switchView('transfer'));
+
+function renderDataQuality() {
+  recordsCache = loadRecords();
+  const dq = computeDataQualityIssues(recordsCache);
+  const container = $('#dataquality-content');
+  const colorFor = sev => sev === 'bad' ? 'var(--danger)' : sev === 'warn' ? 'var(--accent-dark)' : 'var(--primary)';
+
+  const recordsById = {};
+  recordsCache.forEach(r => { recordsById[r.id] = r; });
+
+  // Missing Business Status - the one category where the record's own data
+  // can genuinely indicate the right answer, same evidence-based logic as
+  // HQ's batch tool.
+  const missingRecords = recordsCache.filter(r => !r.businessStatus);
+  const suggested = missingRecords.filter(r => suggestedStatusFor(r) === 'none');
+  const unclear = missingRecords.filter(r => suggestedStatusFor(r) !== 'none');
+
+  let html = '';
+  const total = dq.missingStatus.total + dq.negativeCashCrops.length + dq.turnoverMismatches.length + dq.expensesMismatches.length + dq.wardMismatches.length + dq.missingDate + dq.missingVillage;
+  html += `<div class="warn-box" style="background:${total > 0 ? 'var(--accent-light)' : 'var(--success-light)'}; color:${total > 0 ? '#8A4A05' : 'var(--success)'};">
+    ${total === 0 ? 'No data quality issues currently detected on this device.' : `${total} record(s) on this device are worth a second look before uploading.`}
+  </div>`;
+
+  html += `<div class="review-block card" style="border-left:3px solid ${colorFor(dq.missingStatus.total > 0 ? 'warn' : 'ok')};">
+    <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:${dq.missingStatus.total ? '8px' : '0'};">
+      <h4 style="margin:0;">Missing Business Status</h4>
+      <span style="font-family:var(--font-mono); font-weight:700; color:${colorFor(dq.missingStatus.total > 0 ? 'warn' : 'ok')};">${dq.missingStatus.total}</span>
+    </div>`;
+  if (suggested.length > 0) {
+    html += `<p style="font-size:12.5px; color:var(--text-muted); margin:8px 0;">${suggested.length} of these have cash crop data but nothing from the formal or informal sections — matches exactly what "No business" looks like. Not a guess: this is what the record already shows.</p>
+      <button class="btn btn-primary btn-full" id="btn-apply-suggested-local">Apply "No Business" to All ${suggested.length}</button>`;
+  }
+  if (unclear.length > 0) {
+    html += `<div style="margin-top:10px;"><p style="font-size:12px; color:var(--text-muted); margin-bottom:6px;">${unclear.length} need individual review — genuinely incomplete, nothing indicates the right status:</p>`;
+    html += unclear.map(r => `<div class="review-line clickable" data-id="${esc(r.id)}"><span class="k">${esc((r.location && r.location.ward) || '—')} · HH ${esc((r.location && r.location.householdNo) || '—')}</span><span class="v">${esc((r.location && r.location.village) || '—')}</span></div>`).join('');
+    html += `</div>`;
+  }
+  html += `</div>`;
+
+  const rowsFor = (title, count, items, renderItem) => `
+    <div class="review-block card" style="border-left:3px solid ${colorFor(count > 0 ? 'warn' : 'ok')};">
+      <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:${count ? '8px' : '0'};">
+        <h4 style="margin:0;">${esc(title)}</h4>
+        <span style="font-family:var(--font-mono); font-weight:700; color:${colorFor(count > 0 ? 'warn' : 'ok')};">${count}</span>
+      </div>
+      ${items.map(renderItem).join('')}
+    </div>`;
+
+  html += rowsFor('Negative Cash Crop Values', dq.negativeCashCrops.length, dq.negativeCashCrops, x =>
+    `<div class="review-line clickable" data-id="${esc(x.id)}"><span class="k">${esc(x.ward)} · HH ${esc(x.householdNo || '—')} · ${esc(x.crop)}</span><span class="v" style="color:var(--danger);">${esc(x.field)}: ${esc(x.value)}</span></div>`);
+
+  html += rowsFor('Turnover Amount Doesn\u2019t Match Bracket', dq.turnoverMismatches.length, dq.turnoverMismatches, x =>
+    `<div class="review-line clickable" data-id="${esc(x.id)}"><span class="k">${esc(x.ward)}</span><span class="v">K${Number(x.amount).toLocaleString()} in bracket "${esc(x.bracket)}"</span></div>`);
+
+  html += rowsFor('Expenses Amount Doesn\u2019t Match Bracket', dq.expensesMismatches.length, dq.expensesMismatches, x =>
+    `<div class="review-line clickable" data-id="${esc(x.id)}"><span class="k">${esc(x.ward)}</span><span class="v">K${Number(x.amount).toLocaleString()} in bracket "${esc(x.bracket)}"</span></div>`);
+
+  html += rowsFor('Ward Name Not in Official List', dq.wardMismatches.length, dq.wardMismatches, x =>
+    `<div class="review-line"><span class="k">"${esc(x.ward)}"</span><span class="v">${x.count} record(s)</span></div>`);
+
+  html += `<div class="review-block card" style="border-left:3px solid ${colorFor(dq.missingDate > 0 ? 'warn' : 'ok')};">
+    <div style="display:flex; justify-content:space-between; align-items:center;">
+      <h4 style="margin:0;">Missing Date Collected</h4>
+      <span style="font-family:var(--font-mono); font-weight:700; color:${colorFor(dq.missingDate > 0 ? 'warn' : 'ok')};">${dq.missingDate}</span>
+    </div>
+  </div>`;
+  html += `<div class="review-block card" style="border-left:3px solid ${colorFor(dq.missingVillage > 0 ? 'warn' : 'ok')};">
+    <div style="display:flex; justify-content:space-between; align-items:center;">
+      <h4 style="margin:0;">Missing Village</h4>
+      <span style="font-family:var(--font-mono); font-weight:700; color:${colorFor(dq.missingVillage > 0 ? 'warn' : 'ok')};">${dq.missingVillage}</span>
+    </div>
+  </div>`;
+
+  container.innerHTML = html;
+
+  $all('#dataquality-content .review-line.clickable[data-id]', container).forEach(el => {
+    el.addEventListener('click', () => editRecord(el.dataset.id));
+  });
+
+  const applyBtn = $('#btn-apply-suggested-local');
+  if (applyBtn) applyBtn.addEventListener('click', async () => {
+    if (!confirm(`Set business status to "None" for all ${suggested.length} of these records on this device? This can be undone afterward by editing any record individually, but not in bulk.`)) return;
+    applyBtn.disabled = true;
+    applyBtn.textContent = 'Applying…';
+    let successCount = 0;
+    for (const r of suggested) {
+      const updated = { ...r, businessStatus: 'none', updatedAt: new Date().toISOString() };
+      const ok = await upsertRecordLocal(updated);
+      if (ok) successCount++;
+    }
+    toast(`${successCount} of ${suggested.length} record(s) updated`);
+    renderDataQuality();
+    renderTransfer(); // refreshes the summary card's count too
+  });
+}
+
 
 let lastHealthReportText = '';
 $('#btn-generate-health').addEventListener('click', async () => {

@@ -500,6 +500,9 @@ body.locked .topbar, body.locked .bottomnav{ display:none; }
     </div>
   </div>
 
+  <div class="section-title">Data Quality</div>
+  <div class="card" id="dataquality-summary-card"></div>
+
   <div class="section-title">Upload to HQ</div>
   <div class="card">
     <p style="font-size:13.5px; color:var(--text-muted); margin-bottom:12px;">Push your new records straight into the shared database whenever you have signal — no file, no email, no USB. Already-uploaded records won't be sent again.</p>
@@ -581,6 +584,14 @@ body.locked .topbar, body.locked .bottomnav{ display:none; }
     <button class="btn btn-danger btn-full" style="margin-top:12px;" id="btn-clear-all">Erase all records from this device</button>
     <p class="hint" style="margin-top:8px;">Only erase after confirming your export was received at HQ.</p>
   </div>
+</div>
+
+<div id="view-dataquality" class="view" hidden>
+  <div style="display:flex; align-items:center; gap:10px; margin-bottom:14px;">
+    <button class="btn btn-outline" id="btn-dataquality-back" style="padding:8px 14px;">‹ Back</button>
+    <h2 style="margin:0; font-family:var(--font-display); font-size:19px; color:var(--primary-dark);">Data Quality</h2>
+  </div>
+  <div id="dataquality-content"></div>
 </div>
 
 <div class="toast" id="toast"></div>
