@@ -132,6 +132,14 @@ function getAssignedLLG() {
 function setAssignedLLG(district, llg) {
   localStorage.setItem(ASSIGNED_LLG_KEY, JSON.stringify({ district, llg }));
 }
+// One shared source label for every export path, so it's never drifted
+// between them - names the device's actual assigned LLG specifically,
+// which is more useful attribution than a generic "LLG App" label, and
+// matches the same pattern used for District's exports.
+function exportSourceLabel() {
+  const assigned = getAssignedLLG();
+  return assigned ? `ENBPA ${assigned.llg} Enumerator — Economic & MSME Survey` : 'ENBPA LLG App — Economic & MSME Survey';
+}
 // The ward being actively worked through right now - set once per heap of
 // paper forms, reused automatically for every new survey until changed.
 // Cleared whenever the device's LLG assignment changes, since a ward from
@@ -1158,7 +1166,7 @@ $('#btn-export-selected').addEventListener('click', async () => {
   const all = loadRecords();
   const selected = all.filter(r => selectedIds.has(r.id));
   const filename = exportFilename('json');
-  const payload = { exportedAt: new Date().toISOString(), source: 'ENBPA LLG App — Economic & MSME Survey', recordCount: selected.length, records: selected };
+  const payload = { exportedAt: new Date().toISOString(), source: exportSourceLabel(), officialContact: 'Data requests: Division of Commerce & Industry, ENBPA', recordCount: selected.length, records: selected };
   await shareOrDownloadFile(filename, JSON.stringify(payload, null, 2), 'application/json');
   localStorage.setItem(LAST_EXPORT_KEY, new Date().toISOString());
   toast(`${selected.length} record(s) ready to share`);
@@ -2279,7 +2287,7 @@ $('#btn-backup-llg').addEventListener('click', async () => {
   const assigned = getAssignedLLG();
   const llgPart = assigned ? assigned.llg.replace(/\s+/g, '_') : 'device';
   const filename = `BACKUP-${llgPart}-${todayStr()}.json`;
-  const payload = { exportedAt: new Date().toISOString(), source: 'ENBPA LLG App — Economic & MSME Survey (Backup)', recordCount: all.length, records: all };
+  const payload = { exportedAt: new Date().toISOString(), source: exportSourceLabel() + ' (Backup)', officialContact: 'Data requests: Division of Commerce & Industry, ENBPA', recordCount: all.length, records: all };
   await shareOrDownloadFile(filename, JSON.stringify(payload, null, 2), 'application/json');
   toast('Backup saved — keep it somewhere safe, off this device');
 });
@@ -2287,7 +2295,7 @@ $('#btn-export-json').addEventListener('click', async () => {
   const all = loadRecords();
   if (all.length === 0) { toast('No records to export yet'); return; }
   const filename = exportFilename('json');
-  const payload = { exportedAt: new Date().toISOString(), source: 'ENBPA LLG App — Economic & MSME Survey', recordCount: all.length, records: all };
+  const payload = { exportedAt: new Date().toISOString(), source: exportSourceLabel(), officialContact: 'Data requests: Division of Commerce & Industry, ENBPA', recordCount: all.length, records: all };
   await shareOrDownloadFile(filename, JSON.stringify(payload, null, 2), 'application/json');
   localStorage.setItem(LAST_EXPORT_KEY, new Date().toISOString());
   toast('Ready to share — pick where to send it');
@@ -2307,7 +2315,7 @@ $('#btn-download-json').addEventListener('click', () => {
   const all = loadRecords();
   if (all.length === 0) { toast('No records to export yet'); return; }
   const filename = exportFilename('json');
-  const payload = { exportedAt: new Date().toISOString(), source: 'ENBPA LLG App — Economic & MSME Survey', recordCount: all.length, records: all };
+  const payload = { exportedAt: new Date().toISOString(), source: exportSourceLabel(), officialContact: 'Data requests: Division of Commerce & Industry, ENBPA', recordCount: all.length, records: all };
   downloadFile(filename, JSON.stringify(payload, null, 2), 'application/json');
   localStorage.setItem(LAST_EXPORT_KEY, new Date().toISOString());
   toast('Saved to Downloads');
@@ -2377,7 +2385,12 @@ function recordsToCSV(records) {
     const s = (v === undefined || v === null) ? '' : String(v);
     return /[",\n]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s;
   };
-  return [cols.join(','), ...rows.map(row => row.map(escCsv).join(','))].join('\n');
+  const attribution = [
+    [exportSourceLabel()],
+    [`Exported ${todayStr()} — official data requests: Division of Commerce & Industry, ENBPA`],
+    []
+  ];
+  return [...attribution.map(r => r.map(escCsv).join(',')), cols.join(','), ...rows.map(row => row.map(escCsv).join(','))].join('\n');
 }
 
 function downloadFile(filename, content, mime) {
