@@ -1075,6 +1075,32 @@ function recordItemHTML(r) {
 
 /* ------------------------------- records list ------------------------------ */
 const RECORDS_PAGE_SIZE = 50;
+// household_no is free text ("11 Room 19" for multi-unit dwellings, "02A",
+// etc.) - sorting the raw string would order it alphabetically, not
+// numerically ("10" would sort before "9"). This extracts just the leading
+// number, mirroring HQ's household_no_sort_key logic on the database side.
+// Entries with no leading number default to 0, grouping them first in
+// ascending order rather than scattering unpredictably among numbered ones.
+function householdSortKey(householdNo) {
+  if (!householdNo) return 0;
+  const match = String(householdNo).trim().match(/^(\d+)/);
+  return match ? parseInt(match[1], 10) : 0;
+}
+
+function applySortSelection(list) {
+  const sel = $('#sort-select');
+  const value = sel ? sel.value : 'entered_desc';
+  const cmp = {
+    entered_asc: (a, b) => new Date(a.createdAt) - new Date(b.createdAt),
+    entered_desc: (a, b) => new Date(b.createdAt) - new Date(a.createdAt),
+    collected_asc: (a, b) => new Date(a.location.dateCollected || 0) - new Date(b.location.dateCollected || 0),
+    collected_desc: (a, b) => new Date(b.location.dateCollected || 0) - new Date(a.location.dateCollected || 0),
+    household_asc: (a, b) => householdSortKey(a.location.householdNo) - householdSortKey(b.location.householdNo),
+    household_desc: (a, b) => householdSortKey(b.location.householdNo) - householdSortKey(a.location.householdNo),
+  }[value] || ((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
+  return [...list].sort(cmp);
+}
+
 function renderRecordsList() {
   recordsCache = loadRecords();
   const assigned = getAssignedLLG();
@@ -1098,7 +1124,7 @@ function renderRecordsList() {
       return hay.includes(q);
     });
   }
-  list = [...list].sort((a, b) => new Date(b.updatedAt) - new Date(a.updatedAt));
+  list = applySortSelection(list);
 
   if (renderRecordsList._resetPage !== false) renderRecordsList._page = 1;
   renderRecordsList._resetPage = true;
@@ -1139,6 +1165,9 @@ let searchDebounceTimer = null;
 $('#search-input').addEventListener('input', () => {
   clearTimeout(searchDebounceTimer);
   searchDebounceTimer = setTimeout(renderRecordsList, 200);
+});
+$('#sort-select').addEventListener('change', () => {
+  renderRecordsList();
 });
 
 $('#btn-toggle-select-mode').addEventListener('click', () => {

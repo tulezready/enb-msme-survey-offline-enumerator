@@ -469,6 +469,17 @@ body.locked .topbar, body.locked .bottomnav{ display:none; }
       <input type="text" id="search-input" placeholder="Search household, village, business name…">
       <button class="btn btn-outline" id="btn-toggle-select-mode" style="flex-shrink:0; padding:10px 14px;">Select</button>
     </div>
+    <div style="display:flex; align-items:center; gap:8px; margin-bottom:10px;">
+      <label for="sort-select" style="font-size:12.5px; color:var(--text-muted); flex-shrink:0;">Sort:</label>
+      <select id="sort-select" style="flex:1; padding:8px 10px; border:1px solid var(--border); border-radius:8px; background:var(--surface); color:var(--text); font-size:13px;">
+        <option value="entered_desc">Recently entered first</option>
+        <option value="entered_asc">Oldest entered first</option>
+        <option value="collected_desc">Recently collected first</option>
+        <option value="collected_asc">Oldest collections first</option>
+        <option value="household_asc">Household number (low to high)</option>
+        <option value="household_desc">Household number (high to low)</option>
+      </select>
+    </div>
     <div id="selection-action-bar" hidden style="display:flex; align-items:center; gap:8px; background:var(--surface-2); border-radius:8px; padding:8px 10px; margin-bottom:10px;">
       <span id="selection-count" style="font-size:12.5px; font-weight:600; flex:1;">0 selected</span>
       <button class="btn btn-outline" id="btn-select-since-last-export" style="padding:7px 10px; font-size:12px;">Since last export</button>
