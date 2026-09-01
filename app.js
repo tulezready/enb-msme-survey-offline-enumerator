@@ -2091,6 +2091,13 @@ async function saveDraftRecord() {
     if (!proceed) return;
   }
   draft.updatedAt = new Date().toISOString();
+  // A record already uploaded, then edited, must be treated as pending
+  // again - otherwise the normal Upload button (and the automatic
+  // background sync) both only ever look at records never confirmed sent,
+  // and would silently skip re-sending this change forever. Only Resync
+  // (which ignores this flag and re-sends everything) would ever catch it,
+  // and nobody reaches for that after a routine edit.
+  if (editingExisting) draft.syncedAt = null;
   // The draft is the only safety copy of this work. It must NOT be cleared
   // until the record is confirmed written - the old code fired the save
   // without waiting, deleted the draft immediately, and announced success,
