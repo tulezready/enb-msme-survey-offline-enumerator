@@ -1066,10 +1066,16 @@ function recordItemHTML(r) {
   const statusLabel = status === 'formal' ? 'Formal' : status === 'informal' ? 'Informal' : 'No business';
   const syncNote = r.syncedAt ? '✓ Uploaded' : 'Not uploaded yet';
   const checked = selectedIds.has(r.id);
+  const hhBadge = r.location.householdNo
+    ? `<div class="hh-badge">HH ${esc(r.location.householdNo)}</div>`
+    : `<div class="hh-badge missing">No HH#</div>`;
   return `<div class="record-item" data-id="${r.id}">
     ${selectMode ? `<input type="checkbox" class="record-select-checkbox" data-id="${r.id}" ${checked ? 'checked' : ''} style="width:20px; height:20px; flex-shrink:0; accent-color:var(--primary);">` : `<div class="badge ${status}">${esc(initials)}</div>`}
     <div class="info"><strong>${esc(title)}</strong><span>${esc(sub)} · ${fmtDate(r.location.dateCollected)} · ${syncNote}</span></div>
-    ${selectMode ? '' : `<div class="status-tag ${status}">${statusLabel}</div>`}
+    <div class="right-col">
+      ${hhBadge}
+      ${selectMode ? '' : `<div class="status-tag ${status}">${statusLabel}</div>`}
+    </div>
   </div>`;
 }
 
@@ -1085,6 +1091,18 @@ function householdSortKey(householdNo) {
   if (!householdNo) return 0;
   const match = String(householdNo).trim().match(/^(\d+)/);
   return match ? parseInt(match[1], 10) : 0;
+}
+
+// Strips leading zeros from the leading numeric portion only, leaving
+// everything else exactly as-is - mirrors the server-side
+// normalize_household_no() function exactly, so a household number is
+// cleaned up the moment it's entered here, rather than needing that
+// cleanup to happen later at HQ. Preserves sub-unit suffixes like "01-1"
+// -> "1-1" rather than merging them, and never touches anything that
+// isn't a genuine leading-zero case.
+function normalizeHouseholdNo(raw) {
+  if (!raw) return raw;
+  return String(raw).trim().replace(/^0+(\d)/, '$1');
 }
 
 function applySortSelection(list) {
@@ -1551,7 +1569,15 @@ function openDetail(id) {
   $('#btn-detail-edit').onclick = () => editRecord(r.id);
   $('#btn-detail-back').onclick = () => switchView('records');
   $('#btn-detail-delete').onclick = () => {
-    if (confirm('Delete this record from this device? This cannot be undone.')) {
+    // Enumerator devices can only ever ADD records on the server, never
+    // update or delete them - a deliberate security boundary. That means a
+    // local delete of an already-uploaded record does NOT remove the HQ
+    // copy - it just silently keeps existing there, invisible from this
+    // device, unless someone with HQ or District access removes it too.
+    const warningText = r.syncedAt
+      ? 'This record was already uploaded to HQ. Deleting it here only removes it from THIS device — the copy at HQ will still be there. Contact HQ or your District office to have it removed there too.\n\nDelete it from this device anyway?'
+      : 'Delete this record from this device? This cannot be undone.';
+    if (confirm(warningText)) {
       deleteRecordLocal(r.id);
       toast('Record deleted');
       switchView('records');
@@ -1701,7 +1727,7 @@ function renderStepA(el) {
     ${locationHTML}
     <div class="field"><label>Village</label><input type="text" data-bind="location.village"></div>
     <div class="field-row">
-      <div class="field"><label>Household No.</label><input type="text" data-bind="location.householdNo"></div>
+      <div class="field"><label>Household No.</label><input type="text" data-bind="location.householdNo" id="hh-no-input"></div>
       <div class="field"><label>Date data collected</label><input type="date" data-bind="location.dateCollected"></div>
     </div>
     <div class="field"><label>Contact person & mobile number</label>
@@ -1713,6 +1739,14 @@ function renderStepA(el) {
     <div class="field"><label>Postal address</label><textarea data-bind="location.postalAddress"></textarea></div>
   `;
   bindInputs(el);
+  const hhInput = $('#hh-no-input');
+  if (hhInput) hhInput.addEventListener('blur', () => {
+    const normalized = normalizeHouseholdNo(hhInput.value);
+    if (normalized !== hhInput.value) {
+      hhInput.value = normalized;
+      draft.location.householdNo = normalized; // setting .value alone doesn't fire another 'input' event, so the draft needs updating explicitly here too
+    }
+  });
   if (!locked) {
     $('#loc-district-select').addEventListener('change', () => {
       draft.location.llg = ''; // old LLG almost certainly doesn't belong to the newly picked district
