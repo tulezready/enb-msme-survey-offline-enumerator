@@ -432,6 +432,7 @@ function computeDataQualityIssues(records) {
   const expensesMismatches = [];
   let missingDate = 0, missingVillage = 0;
   const wardUsage = {};
+  const householdByWard = {}; // ward -> array of household_no sort keys, for gap detection below
 
   const turnoverInRange = (bracket, amount) => {
     if (bracket === 'a') return amount <= 60000;
@@ -456,6 +457,14 @@ function computeDataQualityIssues(records) {
     if (ward) wardUsage[ward] = (wardUsage[ward] || 0) + 1;
     if (!r.location || !r.location.dateCollected) missingDate++;
     if (!r.location || !r.location.village) missingVillage++;
+
+    if (ward && r.location && r.location.householdNo) {
+      const key = householdSortKey(r.location.householdNo);
+      if (key >= 1 && key <= 500) { // same cap as the server-side check - a wildly invalid number (e.g. a typo) shouldn't blow up gap detection
+        if (!householdByWard[ward]) householdByWard[ward] = new Set();
+        householdByWard[ward].add(key);
+      }
+    }
 
     const fixed = (r.cashCrops && r.cashCrops.fixed) || {};
     Object.entries(fixed).forEach(([crop, cd]) => {
@@ -490,9 +499,22 @@ function computeDataQualityIssues(records) {
 
   const missingStatusTotal = Object.values(missingStatusByWard).reduce((a, b) => a + b, 0);
 
+  // Only wards with 80%+ of their own range already collected on this
+  // device - a ward barely started isn't "missing" most of its range, it
+  // just hasn't been reached yet.
+  const missingHousehold = Object.entries(householdByWard).map(([ward, presentSet]) => {
+    const maxHh = Math.max(...presentSet);
+    const recordCount = presentSet.size;
+    if (recordCount / maxHh < 0.8) return null;
+    const missing = [];
+    for (let n = 1; n <= maxHh; n++) { if (!presentSet.has(n)) missing.push(n); }
+    if (missing.length === 0) return null;
+    return { ward, recordCount, maxHousehold: maxHh, missingNumbers: missing };
+  }).filter(Boolean);
+
   return {
     missingStatus: { total: missingStatusTotal, byWard: Object.entries(missingStatusByWard).map(([ward, count]) => ({ ward, count })) },
-    negativeCashCrops, turnoverMismatches, expensesMismatches, wardMismatches,
+    negativeCashCrops, turnoverMismatches, expensesMismatches, wardMismatches, missingHousehold,
     missingDate, missingVillage
   };
 }
@@ -2209,7 +2231,8 @@ function renderDataQuality() {
   const unclear = missingRecords.filter(r => suggestedStatusFor(r) !== 'none');
 
   let html = '';
-  const total = dq.missingStatus.total + dq.negativeCashCrops.length + dq.turnoverMismatches.length + dq.expensesMismatches.length + dq.wardMismatches.length + dq.missingDate + dq.missingVillage;
+  const missingHouseholdCount = dq.missingHousehold.reduce((sum, w) => sum + w.missingNumbers.length, 0);
+  const total = dq.missingStatus.total + dq.negativeCashCrops.length + dq.turnoverMismatches.length + dq.expensesMismatches.length + dq.wardMismatches.length + dq.missingDate + dq.missingVillage + missingHouseholdCount;
   html += `<div class="warn-box" style="background:${total > 0 ? 'var(--accent-light)' : 'var(--success-light)'}; color:${total > 0 ? '#8A4A05' : 'var(--success)'};">
     ${total === 0 ? 'No data quality issues currently detected on this device.' : `${total} record(s) on this device are worth a second look before uploading.`}
   </div>`;
@@ -2262,6 +2285,19 @@ function renderDataQuality() {
       <h4 style="margin:0;">Missing Village</h4>
       <span style="font-family:var(--font-mono); font-weight:700; color:${colorFor(dq.missingVillage > 0 ? 'warn' : 'ok')};">${dq.missingVillage}</span>
     </div>
+  </div>`;
+
+  html += `<div class="review-block card" style="border-left:3px solid ${colorFor(missingHouseholdCount > 0 ? 'warn' : 'ok')};">
+    <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:${missingHouseholdCount ? '8px' : '0'};">
+      <h4 style="margin:0;">Missing Household Numbers</h4>
+      <span style="font-family:var(--font-mono); font-weight:700; color:${colorFor(missingHouseholdCount > 0 ? 'warn' : 'ok')};">${missingHouseholdCount}</span>
+    </div>
+    ${missingHouseholdCount === 0 ? '' : `<p style="font-size:12px; color:var(--text-muted); margin-bottom:6px;">These wards have collected 80%+ of their household range but have specific gaps — worth checking whether that household was missed.</p>` +
+      dq.missingHousehold.map(w => {
+        const shown = w.missingNumbers.slice(0, 15);
+        const extra = w.missingNumbers.length - shown.length;
+        return `<div class="review-line" style="align-items:flex-start;"><span class="k">${esc(w.ward)} <span style="color:var(--text-muted); font-weight:400;">(${w.recordCount}/${w.maxHousehold})</span></span><span class="v" style="text-align:right; max-width:55%;">${shown.join(', ')}${extra > 0 ? ` +${extra} more` : ''}</span></div>`;
+      }).join('')}
   </div>`;
 
   container.innerHTML = html;
