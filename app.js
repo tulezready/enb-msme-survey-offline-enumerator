@@ -154,6 +154,52 @@ function setActiveWard(ward) {
 function clearActiveWard() {
   localStorage.removeItem(ACTIVE_WARD_KEY);
 }
+
+// Messages from HQ - not sensitive survey data, so plain localStorage is
+// fine here, unlike the encrypted record vault. "Seen" is tracked entirely
+// on-device via LAST_MESSAGE_CHECK_KEY, since there's no per-device
+// identity on the server to track it against.
+const HQ_MESSAGES_KEY = 'enb_msme_hq_messages_v1';
+const LAST_MESSAGE_CHECK_KEY = 'enb_msme_last_message_check_v1';
+function getMessageHistory() {
+  try { return JSON.parse(localStorage.getItem(HQ_MESSAGES_KEY)) || []; } catch (e) { return []; }
+}
+function saveMessageHistory(list) {
+  localStorage.setItem(HQ_MESSAGES_KEY, JSON.stringify(list));
+}
+
+// Checks for anything new addressed to this device's LLG or district (or a
+// province-wide message) since the last time this device successfully
+// checked. Called whenever the device confirms it has a connection -
+// during an upload, or a resync - never a standalone poll.
+let lastMessageCheckAttempt = 0;
+const MESSAGE_CHECK_MIN_GAP_MS = 60000;
+async function checkForMessages() {
+  if (!sb) return;
+  const assigned = getAssignedLLG();
+  if (!assigned) return;
+  if (Date.now() - lastMessageCheckAttempt < MESSAGE_CHECK_MIN_GAP_MS) return; // called from several independent trigger points now, not just upload
+  lastMessageCheckAttempt = Date.now();
+  const lastChecked = localStorage.getItem(LAST_MESSAGE_CHECK_KEY) || '1970-01-01T00:00:00Z';
+  try {
+    const { data, error } = await sb.rpc('get_messages_for_scope', {
+      p_llg: assigned.llg, p_district: assigned.district, p_since: lastChecked
+    });
+    if (error) throw error;
+    if (data && data.length > 0) {
+      const history = getMessageHistory();
+      data.forEach(m => history.unshift({ id: m.id, text: m.message_text, category: m.category, sentAt: m.sent_at, read: false }));
+      saveMessageHistory(history);
+      localStorage.setItem(LAST_MESSAGE_CHECK_KEY, data[data.length - 1].sent_at);
+      renderDashboard(); // surfaces the new message banner immediately, not just on next screen visit
+    } else {
+      localStorage.setItem(LAST_MESSAGE_CHECK_KEY, new Date().toISOString());
+    }
+  } catch (e) {
+    console.error('Failed to check for messages (non-fatal):', e);
+  }
+}
+
 // Used only for the one-time migration prompt on devices that already had
 // data before this feature existed — suggests (never assumes) an LLG based
 // on whatever's already been collected, so it's a confirm-tap, not blind entry.
@@ -697,6 +743,7 @@ async function runUpload(records, label, opts = {}) {
   await Promise.all(touched.map(r => upsertRecordLocal(r)));
   renderTransfer();
   renderDashboard(); // keeps the unsynced warning on Home accurate immediately
+  checkForMessages(); // reaching this point means the device just successfully connected - the same moment messages should come through
   if (btn) { btn.disabled = false; btn.textContent = 'Upload to HQ'; }
   if (resyncBtn) { resyncBtn.disabled = false; resyncBtn.textContent = 'Resync all with HQ'; }
   const parts = [];
@@ -741,9 +788,15 @@ async function attemptAutoUpload(reason) {
 // whatever is queued, so listen for it rather than waiting for someone to
 // remember to press a button.
 if (typeof window !== 'undefined') {
-  window.addEventListener('online', () => setTimeout(() => attemptAutoUpload('connection restored'), 1500));
+  window.addEventListener('online', () => {
+    setTimeout(() => attemptAutoUpload('connection restored'), 1500);
+    setTimeout(() => checkForMessages(), 1500);
+  });
   document.addEventListener('visibilitychange', () => {
-    if (document.visibilityState === 'visible') attemptAutoUpload('app resumed');
+    if (document.visibilityState === 'visible') {
+      attemptAutoUpload('app resumed');
+      checkForMessages();
+    }
   });
 }
 
@@ -829,6 +882,12 @@ function fmtDate(iso) {
   const d = new Date(iso);
   if (isNaN(d)) return iso;
   return d.toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' });
+}
+function fmtDateTime(iso) {
+  if (!iso) return '—';
+  const d = new Date(iso);
+  if (isNaN(d)) return iso;
+  return d.toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' }) + ', ' + d.toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' });
 }
 
 /* ------------------------------ navigation ------------------------------- */
@@ -1013,9 +1072,38 @@ async function buildHealthReport() {
   return lines.join('\n');
 }
 
+// Shows unread messages from HQ as clear, dismissible cards. Dismissing
+// marks it read (kept in history, not deleted) rather than removing it -
+// nothing a coordinator sent should just vanish once it's been seen.
+function renderMessageBanner() {
+  const el = $('#message-banner');
+  if (!el) return;
+  const history = getMessageHistory();
+  const unread = history.filter(m => !m.read);
+  if (unread.length === 0) { el.innerHTML = ''; return; }
+  el.innerHTML = unread.map(m => `
+    <div class="card" style="border:1.5px solid var(--primary); margin-bottom:10px; position:relative;">
+      <button class="clickable" data-dismiss-msg="${esc(m.id)}" style="position:absolute; top:8px; right:10px; font-size:16px; color:var(--text-muted); background:none; border:none; padding:4px;">✕</button>
+      <div style="display:flex; align-items:center; gap:8px; margin-bottom:6px;"><span style="font-size:16px;">📩</span><strong style="font-size:13px;">Message from HQ</strong></div>
+      <p style="font-size:13.5px; margin:0; padding-right:20px;">${esc(m.text)}</p>
+      <p style="font-size:10.5px; color:var(--text-muted); margin:6px 0 0;">${fmtDateTime(m.sentAt)}</p>
+    </div>
+  `).join('');
+  $all('[data-dismiss-msg]', el).forEach(btn => {
+    btn.addEventListener('click', () => {
+      const list = getMessageHistory();
+      const msg = list.find(x => x.id === btn.dataset.dismissMsg);
+      if (msg) msg.read = true;
+      saveMessageHistory(list);
+      renderMessageBanner();
+    });
+  });
+}
+
 function renderDashboard() {
   updateBrandLabel();
   updateNewSurveyButtonLabel();
+  renderMessageBanner();
   recordsCache = loadRecords();
   renderUnsyncWarning();
   $('#record-count-pill').textContent = recordsCache.length;
@@ -3002,6 +3090,7 @@ function finishUnlock() {
   renderDashboard();
   // Delayed so it never competes with the first render on a slow device.
   setTimeout(() => attemptAutoUpload('app unlocked'), 2500);
+  setTimeout(() => checkForMessages(), 2500); // independent of upload status - a fully-synced device should still receive messages
 }
 
 async function handleForgotPin() {
