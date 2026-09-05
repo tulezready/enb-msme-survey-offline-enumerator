@@ -2296,7 +2296,8 @@ function renderDataQuality() {
       dq.missingHousehold.map(w => {
         const shown = w.missingNumbers.slice(0, 15);
         const extra = w.missingNumbers.length - shown.length;
-        return `<div class="review-line" style="align-items:flex-start;"><span class="k">${esc(w.ward)} <span style="color:var(--text-muted); font-weight:400;">(${w.recordCount}/${w.maxHousehold})</span></span><span class="v" style="text-align:right; max-width:55%;">${shown.join(', ')}${extra > 0 ? ` +${extra} more` : ''}</span></div>`;
+        const fullList = w.missingNumbers.join(', ');
+        return `<div class="review-line" style="align-items:flex-start;"><span class="k">${esc(w.ward)} <span style="color:var(--text-muted); font-weight:400;">(${w.recordCount}/${w.maxHousehold})</span></span><span class="v hh-missing-list" style="text-align:right; max-width:55%;" data-shown="${esc(shown.join(', '))}" data-full="${esc(fullList)}">${shown.join(', ')}${extra > 0 ? ` <span class="clickable" style="color:var(--primary-dark); text-decoration:underline; font-weight:700;" data-expand-hh="1">+${extra} more</span>` : ''}</span></div>`;
       }).join('')}
   </div>`;
 
@@ -2304,6 +2305,13 @@ function renderDataQuality() {
 
   $all('#dataquality-content .review-line.clickable[data-id]', container).forEach(el => {
     el.addEventListener('click', () => editRecord(el.dataset.id));
+  });
+
+  $all('#dataquality-content [data-expand-hh]', container).forEach(el => {
+    el.addEventListener('click', () => {
+      const parent = el.closest('.hh-missing-list');
+      if (parent) parent.textContent = parent.dataset.full;
+    });
   });
 
   const applyBtn = $('#btn-apply-suggested-local');
