@@ -545,17 +545,30 @@ function computeDataQualityIssues(records) {
 
   const missingStatusTotal = Object.values(missingStatusByWard).reduce((a, b) => a + b, 0);
 
-  // Only wards with 80%+ of their own range already collected on this
-  // device - a ward barely started isn't "missing" most of its range, it
-  // just hasn't been reached yet.
+  // A missing number is only flagged if it's part of a short run (5 or
+  // fewer consecutive missing numbers), not a long, unbroken stretch -
+  // mirrors the server-side logic exactly. A ward can genuinely have both
+  // at once: real isolated gaps worth checking, sitting right alongside a
+  // long tail that simply hasn't been surveyed yet - treating the whole
+  // ward as one average would bury the real gaps inside the untouched
+  // stretch, same mistake the old 80%-coverage version made.
   const missingHousehold = Object.entries(householdByWard).map(([ward, presentSet]) => {
     const maxHh = Math.max(...presentSet);
     const recordCount = presentSet.size;
-    if (recordCount / maxHh < 0.8) return null;
-    const missing = [];
-    for (let n = 1; n <= maxHh; n++) { if (!presentSet.has(n)) missing.push(n); }
-    if (missing.length === 0) return null;
-    return { ward, recordCount, maxHousehold: maxHh, missingNumbers: missing };
+    const allMissing = [];
+    for (let n = 1; n <= maxHh; n++) { if (!presentSet.has(n)) allMissing.push(n); }
+    if (allMissing.length === 0) return null;
+    const isolated = [];
+    let runStart = 0;
+    for (let i = 0; i < allMissing.length; i++) {
+      if (i === allMissing.length - 1 || allMissing[i + 1] !== allMissing[i] + 1) {
+        const runLength = i - runStart + 1;
+        if (runLength <= 5) { for (let j = runStart; j <= i; j++) isolated.push(allMissing[j]); }
+        runStart = i + 1;
+      }
+    }
+    if (isolated.length === 0) return null;
+    return { ward, recordCount, maxHousehold: maxHh, missingNumbers: isolated };
   }).filter(Boolean);
 
   return {
@@ -803,8 +816,42 @@ if (typeof window !== 'undefined') {
 // Default, fast path — only records never confirmed sent. This is what keeps
 // "Upload to HQ" quick even once a device has hundreds of synced records
 // behind it, rather than re-attempting every single one on every tap.
-function uploadToHQ() {
+async function uploadToHQ() {
   const pending = loadRecords().filter(r => !r.syncedAt);
+  if (pending.length === 0) { runUpload(pending, 'Uploading…'); return; }
+
+  // Checks whether any pending household number is already on HQ under a
+  // different record - the real gap behind the repeated ghost-record
+  // pattern, where a household gets re-entered as new instead of edited,
+  // and the device has no way to know that number is already taken since
+  // it can only ever see its own local records. Non-fatal if this check
+  // itself fails - the upload should never be blocked by a problem with
+  // the check, only by a genuine match it actually finds.
+  try {
+    const checks = pending.filter(r => r.location && r.location.householdNo).map(r => ({
+      id: r.id, district: r.location.district, llg: r.location.llg, ward: r.location.ward, household_no: r.location.householdNo
+    }));
+    if (checks.length > 0) {
+      const { data, error } = await sb.rpc('check_existing_households', { p_checks: checks });
+      if (error) throw error;
+      const matches = data || [];
+      if (matches.length > 0) {
+        const lines = matches.map(m => {
+          const rec = pending.find(r => r.id === m.checked_id);
+          const hh = rec ? rec.location.householdNo : '?';
+          const ward = rec ? rec.location.ward : '';
+          return `\u2022 Household ${hh} (${ward}) \u2014 already exists on HQ: "${m.existing_contact || 'no name recorded'}", collected ${m.existing_collected || 'unknown date'}`;
+        }).join('\n');
+        const proceed = confirm(
+          `${matches.length} household number(s) you're about to upload already exist on HQ under a different entry:\n\n${lines}\n\nIf this is the same household, go back and edit the existing one instead of uploading a new copy. If these are genuinely different households that happen to share a number, it's fine to continue.\n\nUpload anyway?`
+        );
+        if (!proceed) { toast('Upload cancelled'); return; }
+      }
+    }
+  } catch (e) {
+    console.error('Duplicate check failed (non-fatal, upload continues):', e);
+  }
+
   runUpload(pending, 'Uploading…');
 }
 
