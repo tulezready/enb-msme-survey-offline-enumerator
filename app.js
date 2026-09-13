@@ -878,7 +878,47 @@ async function uploadToHQ() {
 // Deliberate, occasional action — re-attempts every local record, including
 // already-synced ones, so a record HQ deleted can come back. Slower on a
 // device with a lot of history, which is exactly why it isn't the default.
-function resyncAllWithHQ() {
+async function resyncAllWithHQ() {
+  const all = loadRecords();
+  const previouslySynced = all.filter(r => r.syncedAt && r.id);
+  // Pulling down HQ's current state closes the other half of Resync: without
+  // this, a device that still holds an old, since-corrected version of a
+  // record (a household number that got renumbered to resolve a collision,
+  // for instance) would silently push that stale copy right back over the
+  // fix the moment it resyncs - since as far as the device knows, nothing
+  // changed. Non-fatal if this step fails; the upload below still runs
+  // either way, exactly as Resync has always worked.
+  if (sb && previouslySynced.length > 0) {
+    try {
+      const { data: current, error } = await sb.rpc('get_current_records', { p_ids: previouslySynced.map(r => r.id) });
+      if (error) throw error;
+      let correctedCount = 0, removedCount = 0;
+      for (const hqRecord of (current || [])) {
+        const local = all.find(r => r.id === hqRecord.id);
+        if (!local) continue;
+        if (hqRecord.is_deleted) {
+          deleteRecordLocal(hqRecord.id);
+          removedCount++;
+        } else {
+          const { syncedAt: _localSyncedAt, ...localContent } = local;
+          const { syncedAt: _hqSyncedAt, ...hqContent } = hqRecord.data;
+          if (JSON.stringify(hqContent) !== JSON.stringify(localContent)) {
+            const corrected = { ...hqRecord.data, syncedAt: local.syncedAt };
+            await upsertRecordLocal(corrected);
+            correctedCount++;
+          }
+        }
+      }
+      if (correctedCount || removedCount) {
+        const parts = [];
+        if (correctedCount) parts.push(`${correctedCount} record(s) updated to match HQ`);
+        if (removedCount) parts.push(`${removedCount} removed (deleted at HQ)`);
+        toast(parts.join(' · '));
+      }
+    } catch (e) {
+      console.error('Pulling current state from HQ failed (non-fatal, upload continues):', e);
+    }
+  }
   runUpload(loadRecords(), 'Resyncing…');
 }
 
