@@ -717,21 +717,40 @@ async function runUpload(records, label, opts = {}) {
     if (progressText) progressText.textContent = `0 of ${records.length} processed`;
   }
 
-  let sentCount = 0, alreadyCount = 0, failCount = 0, processedCount = 0;
+  let sentCount = 0, correctedCount = 0, rejectedCount = 0, failCount = 0, processedCount = 0;
   const now = new Date().toISOString();
   const touched = [];
-  // Duplicate-ID conflict = HQ still has it (harmless no-op). No conflict =
-  // either genuinely new, or HQ deleted it and it just went back in — either
-  // way that's a legitimate "sent". This device can only ever add rows,
-  // never read, edit, or delete anything already in the shared database.
+  // A duplicate-ID conflict means HQ already has this id - but that no
+  // longer means "nothing to do". If this record was edited since it was
+  // first uploaded, the correction needs to actually reach HQ, not be
+  // silently treated as already-synced while the old content sits there
+  // untouched. upsert_msme_record pushes the current local content into
+  // the existing row - unless HQ has soft-deleted that id, in which case
+  // it deliberately stays deleted rather than being revived.
   for (const r of records) {
     try {
       const { error } = await sb.from('msme_records').insert(recordToRow(r));
       if (error) {
         const isDuplicate = error.code === '23505' || /duplicate key/i.test(error.message || '');
         if (isDuplicate) {
-          alreadyCount++;
-          if (!r.syncedAt) { r.syncedAt = now; touched.push(r); }
+          const row = recordToRow(r);
+          const { data: result, error: upsertError } = await sb.rpc('upsert_msme_record', {
+            p_id: row.id, p_district: row.district, p_llg: row.llg, p_village: row.village, p_ward: row.ward,
+            p_household_no: row.household_no, p_business_status: row.business_status,
+            p_date_collected: row.date_collected || '', p_data: row.data
+          });
+          if (upsertError) throw upsertError;
+          if (result && result.updated) {
+            correctedCount++;
+            r.syncedAt = now;
+            touched.push(r);
+          } else {
+            // HQ has this id soft-deleted - a deliberate decision made there,
+            // not something this device should be able to override by
+            // re-sending. Left unsynced so it stays visible as unresolved
+            // rather than quietly disappearing into "success".
+            rejectedCount++;
+          }
         } else {
           throw error;
         }
@@ -761,12 +780,13 @@ async function runUpload(records, label, opts = {}) {
   if (resyncBtn) { resyncBtn.disabled = false; resyncBtn.textContent = 'Resync all with HQ'; }
   const parts = [];
   if (sentCount) parts.push(`${sentCount} sent`);
-  if (alreadyCount) parts.push(`${alreadyCount} already at HQ`);
+  if (correctedCount) parts.push(`${correctedCount} correction(s) sent`);
+  if (rejectedCount) parts.push(`${rejectedCount} rejected (deleted at HQ)`);
   if (failCount) parts.push(`${failCount} failed`);
   if (silent) {
     // Background upload: only speak up when something actually moved, so it
     // never nags a device that had nothing pending.
-    if (sentCount) toast(`Auto-uploaded ${sentCount} record(s) to HQ`);
+    if (sentCount || correctedCount) toast(`Auto-uploaded ${sentCount + correctedCount} record(s) to HQ`);
   } else {
     toast(parts.length ? parts.join(' · ') : 'Nothing to upload');
   }
