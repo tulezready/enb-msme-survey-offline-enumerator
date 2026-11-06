@@ -119,6 +119,96 @@ function wardOptionsHTML(llg, currentWard) {
   return opts;
 }
 
+/* ------------------------- LLG household progress -------------------------
+   The Division's total households per LLG - the same figures the HQ app
+   uses - so each LLG can see its own progress. Update here (and in HQ) if
+   the Division revises a figure. */
+const LLG_HOUSEHOLDS = {
+  'Central Gazelle Rural': 10574, 'Inland Baining Rural': 5892, 'Lassul Baining Rural': 1959, 'Open Bay Rural': 1013,
+  'Livuan Rural': 3709, 'Reimber Rural': 3401, 'Toma Rural': 3707, 'Vunadidir Rural': 3172,
+  'Bitapaka Rural': 3841, 'Duke of York Rural': 3426, 'Kokopo-Vunamami Urban': 5322, 'Raluana Rural': 2960,
+  'Central Pomio Rural': 1581, 'Inland Pomio Rural': 1950, 'East Pomio Rural': 1472, 'Melkoi Rural': 2629,
+  'Sinivit Rural': 3317, 'West Pomio Rural': 2123, 'Mamusi Rural': 1997,
+  'Balanataman Rural': 4837, 'Kombiu Rural': 2263, 'Rabaul Urban': 928, 'Watom Island Rural': 650
+};
+// HQ's count for this LLG (counts only - no names or record details), kept
+// on the phone so progress still shows when offline.
+const LLG_PROGRESS_KEY = 'enb_msme_llg_progress_v1';
+function getCachedLlgProgress(llg) {
+  try { const p = JSON.parse(localStorage.getItem(LLG_PROGRESS_KEY)); return (p && p.llg === llg) ? p : null; } catch (e) { return null; }
+}
+let lastProgressFetch = 0;
+async function refreshLlgProgress() {
+  if (!sb) return;
+  const assigned = getAssignedLLG();
+  if (!assigned) return;
+  if (typeof navigator !== 'undefined' && navigator.onLine === false) return;
+  if (Date.now() - lastProgressFetch < 60000) return;
+  lastProgressFetch = Date.now();
+  try {
+    const { data, error } = await sb.rpc('get_llg_progress', { p_llg: assigned.llg });
+    if (error) throw error;
+    if (data && typeof data.total === 'number') {
+      localStorage.setItem(LLG_PROGRESS_KEY, JSON.stringify({
+        llg: assigned.llg, total: data.total, byWard: data.by_ward || {}, fetchedAt: new Date().toISOString()
+      }));
+      if (typeof currentView === 'undefined' || currentView === 'dashboard') renderDashboard();
+      else renderLlgProgress();
+    }
+  } catch (e) {
+    console.error('Failed to fetch LLG progress (non-fatal):', e);
+  }
+}
+// Best estimate of households reached for this LLG: everything HQ already
+// has, plus anything on this phone not uploaded yet. With no HQ figure yet
+// (never been online), it falls back to what is on this phone.
+function computeLlgProgress(records) {
+  const assigned = getAssignedLLG();
+  if (!assigned) return null;
+  const mine = records.filter(r => r.location && r.location.llg === assigned.llg);
+  const pending = mine.filter(r => !r.syncedAt);
+  const cached = getCachedLlgProgress(assigned.llg);
+  return {
+    llg: assigned.llg,
+    target: LLG_HOUSEHOLDS[assigned.llg] || 0,
+    reached: cached ? cached.total + pending.length : mine.length,
+    hq: cached ? cached.total : null,
+    pending: pending.length,
+    pendingRecords: pending,
+    fetchedAt: cached ? cached.fetchedAt : null,
+    byWard: cached ? cached.byWard : null
+  };
+}
+function llgProgressHTML(p) {
+  if (!p) return '';
+  const n = v => Number(v).toLocaleString('en-US');
+  if (!p.target) {
+    return `<div class="card llg-progress"><div class="llg-progress-head"><span>Households reached — ${esc(p.llg)}</span></div>
+      <div class="llg-progress-num"><strong>${n(p.reached)}</strong> households</div>
+      <div class="llg-progress-sub">No total households set for this LLG yet.</div></div>`;
+  }
+  const pct = Math.round(p.reached / p.target * 100);
+  const over = p.reached > p.target;
+  const when = p.fetchedAt
+    ? new Date(p.fetchedAt).toLocaleString('en-GB', { day: 'numeric', month: 'short', hour: 'numeric', minute: '2-digit' })
+    : '';
+  const lines = [];
+  if (p.hq != null) lines.push(`Uploaded to HQ: <strong>${n(p.hq)}</strong> · updated ${esc(when)}`);
+  else lines.push('Counting this phone only. Connect to the internet to see the whole LLG from HQ.');
+  if (p.pending) lines.push(`On this phone, not uploaded yet: <strong>${n(p.pending)}</strong>`);
+  return `<div class="card llg-progress">
+    <div class="llg-progress-head"><span>Households reached — ${esc(p.llg)}</span><span class="llg-progress-pct${over ? ' over' : ''}">${pct}%</span></div>
+    <div class="llg-progress-num"><strong>${n(p.reached)}</strong> of ${n(p.target)} households</div>
+    <div class="llg-progress-track"><div class="llg-progress-fill${over ? ' over' : ''}" style="width:${Math.min(pct, 100)}%"></div></div>
+    <div class="llg-progress-sub">${lines.join('<br>')}</div>
+    ${over ? `<div class="llg-progress-sub warn">This is more than the Division's total for this LLG. Check for households entered twice, or tell HQ if the total has changed.</div>` : ''}
+  </div>`;
+}
+function renderLlgProgress() {
+  const el = document.getElementById('llg-progress-home');
+  if (el) el.innerHTML = llgProgressHTML(computeLlgProgress(loadRecords()));
+}
+
 /* ---------------------------- device LLG assignment ----------------------------
    Each device is locked to one LLG at setup — District/LLG are then fixed on
    every new survey, only Ward stays free per household. This removes an
@@ -776,6 +866,7 @@ async function runUpload(records, label, opts = {}) {
   renderTransfer();
   renderDashboard(); // keeps the unsynced warning on Home accurate immediately
   checkForMessages(); // reaching this point means the device just successfully connected - the same moment messages should come through
+  lastProgressFetch = 0; refreshLlgProgress(); // an upload just changed HQ's count for this LLG
   if (btn) { btn.disabled = false; btn.textContent = 'Upload to HQ'; }
   if (resyncBtn) { resyncBtn.disabled = false; resyncBtn.textContent = 'Resync all with HQ'; }
   const parts = [];
@@ -824,11 +915,13 @@ if (typeof window !== 'undefined') {
   window.addEventListener('online', () => {
     setTimeout(() => attemptAutoUpload('connection restored'), 1500);
     setTimeout(() => checkForMessages(), 1500);
+    setTimeout(() => refreshLlgProgress(), 1500);
   });
   document.addEventListener('visibilitychange', () => {
     if (document.visibilityState === 'visible') {
       attemptAutoUpload('app resumed');
       checkForMessages();
+      refreshLlgProgress();
     }
   });
 }
@@ -1230,13 +1323,28 @@ function renderDashboard() {
     if (w && wardCounts.hasOwnProperty(w)) wardCounts[w]++;
     else otherWardCount++; // covers both a blank ward and a ward that doesn't match the official list
   });
+  // Once HQ's counts are on the phone, show the whole LLG per ward (HQ plus
+  // anything here not uploaded yet), not just this phone's share.
+  const prog = computeLlgProgress(recordsCache);
+  const wardFromHQ = !!(prog && prog.byWard);
+  if (wardFromHQ) {
+    officialWards.forEach(w => wardCounts[w] = Number(prog.byWard[w]) || 0);
+    otherWardCount = Object.keys(prog.byWard).filter(w => !officialWards.includes(w)).reduce((s, w) => s + (Number(prog.byWard[w]) || 0), 0);
+    prog.pendingRecords.forEach(r => {
+      const w = r.location && r.location.ward;
+      if (w && wardCounts.hasOwnProperty(w)) wardCounts[w]++;
+      else otherWardCount++;
+    });
+  }
+  const llgEl = document.getElementById('llg-progress-home');
+  if (llgEl) llgEl.innerHTML = llgProgressHTML(prog);
   const wardsStarted = officialWards.filter(w => wardCounts[w] > 0).length;
 
   const dEl = $('#district-breakdown');
   const progressEl = $('#ward-progress-summary');
   if (progressEl) {
     progressEl.textContent = officialWards.length
-      ? `${wardsStarted} of ${officialWards.length} wards started`
+      ? `${wardsStarted} of ${officialWards.length} wards started${wardFromHQ ? ' (whole LLG)' : ' (this phone)'}`
       : 'No LLG assigned yet';
   }
   // Official order, matching the Ward dropdown and the paper form numbering —
@@ -1644,6 +1752,7 @@ function renderRecordsSummary() {
 
   let html = printHeader + `<div class="warn-box">Summary of all ${total} record(s) collected${assigned ? ` for <strong>${esc(assigned.llg)}</strong>` : ' on this device'} — updates automatically as more surveys are collected.</div>`;
 
+  html += llgProgressHTML(computeLlgProgress(all));
   html += `<div class="stat-grid">
     <div class="stat-card"><div class="num">${total}</div><div class="lbl">Total surveyed</div></div>
     <div class="stat-card accent"><div class="num">${byStatus.formal}</div><div class="lbl">Formal business</div></div>
@@ -3197,6 +3306,7 @@ function finishUnlock() {
   renderDashboard();
   // Delayed so it never competes with the first render on a slow device.
   setTimeout(() => attemptAutoUpload('app unlocked'), 2500);
+  setTimeout(() => refreshLlgProgress(), 2500);
   setTimeout(() => checkForMessages(), 2500); // independent of upload status - a fully-synced device should still receive messages
 }
 

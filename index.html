@@ -395,8 +395,20 @@ body.locked .topbar, body.locked .bottomnav{ display:none; }
   .print-only{display:block;}
   .print-header{display:block !important;}
   body{padding-bottom:0; -webkit-print-color-adjust:exact; print-color-adjust:exact;}
-  .chart-fill, .badge, .status-tag, .stat-card, .card, .donut, .stacked-seg{-webkit-print-color-adjust:exact; print-color-adjust:exact;}
+  .chart-fill, .badge, .status-tag, .stat-card, .card, .donut, .stacked-seg, .llg-progress-track, .llg-progress-fill{-webkit-print-color-adjust:exact; print-color-adjust:exact;}
 }
+
+.llg-progress{margin-bottom:14px;}
+.llg-progress-head{display:flex; justify-content:space-between; align-items:baseline; gap:10px; font-size:12px; color:var(--text-muted); text-transform:uppercase; letter-spacing:.04em; font-weight:600;}
+.llg-progress-pct{font-family:var(--font-display); font-size:22px; color:var(--primary); text-transform:none; letter-spacing:0;}
+.llg-progress-pct.over{color:var(--accent);}
+.llg-progress-num{font-size:15px; margin:4px 0 8px;}
+.llg-progress-num strong{font-family:var(--font-display); font-size:26px; color:var(--primary-dark);}
+.llg-progress-track{height:10px; background:var(--surface-2); border-radius:999px; overflow:hidden;}
+.llg-progress-fill{height:100%; background:var(--primary); border-radius:999px;}
+.llg-progress-fill.over{background:var(--accent);}
+.llg-progress-sub{font-size:12px; color:var(--text-muted); margin-top:8px; line-height:1.5;}
+.llg-progress-sub.warn{color:var(--accent-dark);}
 </style>
 </head>
 <body data-role="enumerator">
@@ -436,6 +448,7 @@ body.locked .topbar, body.locked .bottomnav{ display:none; }
       <span id="offline-readiness-desc-home" style="font-size:12px; color:var(--text-muted);">Working it out</span>
     </div>
   </div>
+  <div id="llg-progress-home"></div>
   <div class="stat-grid">
     <div class="stat-card"><div class="num" id="stat-total">0</div><div class="lbl">Total records</div></div>
     <div class="stat-card accent"><div class="num" id="stat-week">0</div><div class="lbl">This week</div></div>
