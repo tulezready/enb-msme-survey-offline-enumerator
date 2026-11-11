@@ -1755,8 +1755,8 @@ function renderRecordsSummary() {
   html += llgProgressHTML(computeLlgProgress(all));
   html += `<div class="stat-grid">
     <div class="stat-card"><div class="num">${total}</div><div class="lbl">Total surveyed</div></div>
-    <div class="stat-card accent"><div class="num">${byStatus.formal}</div><div class="lbl">Formal business</div></div>
-    <div class="stat-card"><div class="num">${byStatus.informal}</div><div class="lbl">Informal sector</div></div>
+    <div class="stat-card accent clickable" data-dir="formal" tabindex="0" role="button" title="Open the list of formal businesses"><div class="num">${byStatus.formal}</div><div class="lbl">Formal business</div><div class="dir-hint no-print">View list ›</div></div>
+    <div class="stat-card clickable" data-dir="informal" tabindex="0" role="button" title="Open the list of informal businesses"><div class="num">${byStatus.informal}</div><div class="lbl">Informal sector</div><div class="dir-hint no-print">View list ›</div></div>
     <div class="stat-card"><div class="num">${byStatus.none}</div><div class="lbl">No business</div></div>
   </div>`;
   html += donutChartHTML('Business Status Split', [
@@ -1827,6 +1827,11 @@ function renderRecordsSummary() {
   container.innerHTML = html;
   const printBtn = $('#btn-print-summary');
   if (printBtn) printBtn.addEventListener('click', () => window.print());
+  container.querySelectorAll('[data-dir]').forEach((card) => {
+    const open = () => openBusinessDirectory(card.dataset.dir, { llg: assigned ? assigned.llg : null });
+    card.addEventListener('click', open);
+    card.addEventListener('keydown', (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); open(); } });
+  });
 }
 
 /* -------------------------------- detail view ------------------------------- */
@@ -3589,3 +3594,214 @@ if ('serviceWorker' in navigator) {
   setOfflineStatus(false, 'This browser does not support offline mode. Try Chrome or the built-in browser on your phone.');
 }
 initLockScreen();
+
+/* ------------------------------ business directory ------------------------------ */
+// Opened from the Summary's Formal / Informal cards. Lists every business in the
+// records held on this device, grouped by business name, owner, activity or ward,
+// with search, print and CSV. Built only from local records - nothing is fetched,
+// so no new server access is opened for names or phone numbers.
+const DIR_ACTIVITY_GROUPS = [
+  ['Betelnut (buai)', /bu[a]?i|betel|bettle|beetle|betle|daka|mustard/i],
+  ['Smoke / tobacco', /brus|burus|smoke|tobac|cigar/i],
+  ['Cocoa', /cocoa|cacao|wet ?bean|dry ?bean/i],
+  ['Copra / coconut', /copra|coconut|kulau|coconut oil/i],
+  ['Coffee', /coffee/i],
+  ['Vanilla', /vanilla/i],
+  ['Fishing / seafood', /fish|sea ?cucumber|beche|shell|crab|prawn|lobster|seafood/i],
+  ['Poultry / livestock', /poultry|chicken|egg|pig|livestock|cattle|goat|duck/i],
+  ['Baking / cooked food', /bak|bread|scone|donut|doughnut|cook|food bar|fast ?food|snack|flour|cake|pancake/i],
+  ['Sewing / tailoring', /sew|tailor|meri blouse|laplap|cloth/i],
+  ['Trade store / canteen', /trade ?store|canteen|store goods|tucker|kiosk|shop/i],
+  ['Second-hand clothes', /second ?hand|2nd ?hand|bale/i],
+  ['Handicraft / bilum', /craft|bilum|basket|weav|carv|mat\b|mats/i],
+  ['Fuel / petrol', /fuel|petrol|diesel|kerosene/i],
+  ['Transport / PMV / boat', /pmv|transport|taxi|truck|dinghy|boat|banana boat|vehicle|hire car|bus/i],
+  ['Timber / sawmill / building', /saw|timber|carpent|build|join|furniture|blocks/i],
+  ['Peanuts', /peanut|galip|nut/i],
+  ['Garden produce / vegetables', /garden|vegetable|veggie|produce|taro|kaukau|sweet potato|banana|yam|greens|fruit|cabbage|pumpkin|aibika|corn|tapioca|cassava|watermelon|pineapple|kumu|sugar ?cane/i],
+  ['Market / sales (general)', /market|table|roadside|road side|black|sale|sell|vend|paddl|marketing|goods/i],
+  ['Services / repairs', /mechanic|repair|barber|hair|phone|charging|carpentry|electric|services|labour|labor|contract/i],
+];
+function dirActivityGroup(a) {
+  if (!a) return 'Not recorded';
+  for (const [label, re] of DIR_ACTIVITY_GROUPS) if (re.test(a)) return label;
+  return 'Other';
+}
+// Tidy a name for display and grouping: trim, collapse spaces, title case shouty entries.
+function dirNameTidy(s) {
+  if (!s) return '';
+  let t = String(s).replace(/\s+/g, ' ').trim();
+  if (t === t.toUpperCase() || t === t.toLowerCase()) t = t.toLowerCase().replace(/\b([a-z])/g, (m) => m.toUpperCase());
+  return t;
+}
+function dirKey(s) { return String(s || '').toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim(); }
+
+const dirFmt = (n) => (Number(n) || 0).toLocaleString('en-US');
+const bizDir = { status: null, rows: [], group: 'name', q: '', scope: {} };
+
+function openBusinessDirectory(status, scope) {
+  bizDir.status = status;
+  bizDir.scope = scope || {};
+  bizDir.group = status === 'formal' ? 'name' : 'activity';
+  bizDir.q = '';
+  bizDir.rows = [];
+  let el = document.getElementById('biz-dir');
+  if (!el) {
+    el = document.createElement('div');
+    el.id = 'biz-dir';
+    el.setAttribute('role', 'dialog');
+    el.setAttribute('aria-modal', 'true');
+    document.body.appendChild(el);
+  }
+  document.body.classList.add('dir-open');
+  el.hidden = false;
+  const label = status === 'formal' ? 'Formal businesses' : 'Informal businesses';
+  el.innerHTML = `<div class="dir-head"><div><div class="dir-title">${label}</div><div class="dir-scope">${esc(dirScopeLabel())}</div></div>
+    <button class="btn btn-outline dir-close" id="dir-close" aria-label="Close">Close</button></div>
+    <div class="dir-body"></div>`;
+  $('#dir-close').onclick = closeBusinessDirectory;
+  document.addEventListener('keydown', dirEsc);
+
+  const data = dirRowsFromLocal(status);
+  bizDir.rows = (data || []).map((r) => {
+    const name = dirNameTidy(r.name);
+    const owner = dirNameTidy(status === 'formal' ? r.head : (r.own || r.head));
+    const actRaw = status === 'formal' ? [r.act, r.other].filter(Boolean).join(', ') : (r.act || '');
+    const tb = r.tb ? ((TURNOVER_BRACKETS.find((b) => b[0] === r.tb) || [])[1] || r.tb) : null;
+    const turn = r.turn ? r.turn.replace(/^\s*k\s*/i, '') : null;
+    return { ...r, name, owner, tb, turn, head: dirNameTidy(r.head), actRaw, actGroup: status === 'formal' ? (r.act ? r.act.split(', ')[0] : (r.other ? 'Other' : 'Not recorded')) : dirActivityGroup(r.act) };
+  });
+  renderBusinessDirectory();
+}
+function dirScopeLabel() {
+  const s = bizDir.scope;
+  return s.llg ? `${s.llg} LLG — records on this device` : 'Records on this device';
+}
+// Same shape as the HQ app's get_business_directory rows, built from local records.
+function dirRowsFromLocal(status) {
+  const t = (v) => (v == null ? null : (String(v).trim() || null));
+  const out = [];
+  (loadRecords() || []).forEach((r) => {
+    if (!r || r.businessStatus !== status) return;
+    const loc = r.location || {};
+    const base = { id: r.id, hh: t(loc.householdNo), d: t(loc.district), l: t(loc.llg), w: t(loc.ward), v: t(loc.village), head: t(loc.contactPerson), ph: t(loc.mobile) };
+    if (status === 'formal') {
+      const bz = r.business || {}; const acts = bz.activities || {};
+      const set = new Set();
+      ['general', 'dpi', 'tourism', 'nrmd', 'fisheries'].forEach((k) => { if (Array.isArray(acts[k])) acts[k].forEach((a) => a && set.add(a)); });
+      out.push({ ...base, name: t(bz.name), own: t(bz.owner), act: set.size ? [...set].sort().join(', ') : null, other: t(acts.othersSpecify), ipa: t(bz.ipaRegistered), tb: t((r.economic || {}).turnoverBracket) });
+    } else {
+      const entries = Array.isArray((r.informal || {}).entries) && r.informal.entries.length ? r.informal.entries : [{}];
+      entries.forEach((e) => out.push({ ...base, own: t(e.ownerName), act: t(e.activityType), turn: t(e.monthlyTurnover), yr: t(e.yearEstablished) }));
+    }
+  });
+  return out;
+}
+function dirEsc(e) { if (e.key === 'Escape') closeBusinessDirectory(); }
+function closeBusinessDirectory() {
+  const el = document.getElementById('biz-dir');
+  if (el) { el.hidden = true; el.innerHTML = ''; }
+  document.body.classList.remove('dir-open');
+  document.removeEventListener('keydown', dirEsc);
+  bizDir.status = null;
+}
+
+function dirFiltered() {
+  const q = dirKey(bizDir.q);
+  if (!q) return bizDir.rows;
+  return bizDir.rows.filter((r) => dirKey([r.name, r.owner, r.head, r.actRaw, r.v, r.w, r.l, r.hh].join(' ')).includes(q));
+}
+function dirGroupKey(r) {
+  const g = bizDir.group;
+  if (g === 'name') return r.name || '(No business name recorded)';
+  if (g === 'owner') return r.owner || '(No owner name recorded)';
+  if (g === 'activity') return r.actGroup;
+  if (g === 'ward') return `${r.w || 'No ward'}${bizDir.scope.llg ? '' : ' — ' + (r.l || '')}`;
+  return '';
+}
+function dirSort(a, b) {
+  const blank = (s) => s.startsWith('(') || s === 'Not recorded' || s === 'Other';
+  if (blank(a) !== blank(b)) return blank(a) ? 1 : -1;
+  return a.localeCompare(b, 'en', { sensitivity: 'base' });
+}
+
+function renderBusinessDirectory() {
+  const el = document.getElementById('biz-dir');
+  if (!el || el.hidden) return;
+  const formal = bizDir.status === 'formal';
+  const rows = dirFiltered();
+  // Group (names are matched loosely so "JOHN TOBIAS" and "John  Tobias" land together).
+  const groups = new Map();
+  for (const r of rows) {
+    const label = dirGroupKey(r);
+    const k = label.startsWith('(') ? label : (bizDir.group === 'name' || bizDir.group === 'owner') ? dirKey(label) : label;
+    if (!groups.has(k)) groups.set(k, { label, items: [] });
+    groups.get(k).items.push(r);
+  }
+  const ordered = [...groups.values()].sort((a, b) => bizDir.group === 'activity' ? (b.items.length - a.items.length) || dirSort(a.label, b.label) : dirSort(a.label, b.label));
+  const chips = [['name', formal ? 'Business name' : null], ['owner', 'Owner'], ['activity', 'Activity'], ['ward', 'Ward']].filter((c) => c[1]);
+  const withName = formal ? bizDir.rows.filter((r) => r.name).length : 0;
+  const people = new Set(rows.map((r) => r.id)).size;
+
+  const rowHTML = (r) => {
+    const main = bizDir.group === 'name' ? (r.owner || '—') : bizDir.group === 'owner' ? (formal ? (r.name || r.actRaw || '—') : (r.actRaw || '—')) : (formal ? (r.name || r.owner || '—') : (r.owner || '—'));
+    const bits = [];
+    if ((bizDir.group !== 'activity' || !formal) && r.actRaw) bits.push(esc(r.actRaw));
+    if (formal && bizDir.group === 'activity' && r.owner && r.name) bits.push('Owner: ' + esc(r.owner));
+    if (!formal && r.head && r.owner && dirKey(r.head) !== dirKey(r.owner)) bits.push('Household: ' + esc(r.head));
+    if (formal && r.ipa) bits.push(r.ipa === 'yes' || r.ipa === 'Yes' || r.ipa === 'true' ? 'IPA registered' : 'IPA: ' + esc(r.ipa));
+    if (formal && r.tb) bits.push('Turnover: ' + esc(r.tb));
+    if (!formal && r.turn) bits.push('K' + esc(r.turn) + ' a month');
+    if (!formal && r.yr) bits.push('Since ' + esc(r.yr));
+    const place = [r.v, bizDir.group === 'ward' ? null : r.w, bizDir.scope.llg ? null : r.l].filter(Boolean).map(esc).join(', ');
+    return `<li class="dir-row" data-id="${esc(r.id)}" tabindex="0">
+      <div class="dir-main">${esc(main)}</div>
+      <div class="dir-meta">${bits.join(' · ')}</div>
+      <div class="dir-place">HH ${esc(r.hh || '—')}${place ? ' · ' + place : ''}</div></li>`;
+  };
+
+  const body = `
+    <div class="dir-tools no-print">
+      <input type="search" id="dir-search" class="dir-search" placeholder="Search name, owner, activity, village…" value="${esc(bizDir.q)}">
+      <div class="filter-chips" role="group" aria-label="Group by">${chips.map(([k, l]) => `<button class="chip${bizDir.group === k ? ' active' : ''}" data-dirgroup="${k}">${l}</button>`).join('')}</div>
+      <div class="dir-actions"><button class="btn btn-outline" id="dir-print">Print / Save as PDF</button><button class="btn btn-outline" id="dir-csv">Download CSV</button></div>
+    </div>
+    <div class="dir-count">${dirFmt(rows.length)} ${formal ? 'business' : 'activit'}${formal ? (rows.length === 1 ? '' : 'es') : (rows.length === 1 ? 'y' : 'ies')} in ${dirFmt(ordered.length)} group${ordered.length === 1 ? '' : 's'}${bizDir.q ? ` matching “${esc(bizDir.q)}”` : ''}${formal ? ` · ${dirFmt(withName)} of ${dirFmt(bizDir.rows.length)} have a business name recorded` : ` · from ${dirFmt(people)} household${people === 1 ? '' : 's'}`}</div>
+    ${ordered.length ? ordered.map((g) => `<details class="dir-group"${ordered.length <= 12 || bizDir.q ? ' open' : ''}>
+        <summary><span class="dir-glabel">${esc(g.label)}</span><span class="dir-gcount">${dirFmt(g.items.length)}</span></summary>
+        <ul class="dir-list">${g.items.slice().sort((a, b) => dirSort(a.owner || a.name || '~', b.owner || b.name || '~')).map(rowHTML).join('')}</ul></details>`).join('')
+      : `<div class="empty-state">No businesses ${bizDir.q ? 'match that search' : 'recorded in this area'}.</div>`}`;
+  const bodyEl = el.querySelector('.dir-body');
+  const hadFocus = document.activeElement && document.activeElement.id === 'dir-search';
+  bodyEl.innerHTML = body;
+  const search = $('#dir-search');
+  if (hadFocus) { search.focus(); search.setSelectionRange(search.value.length, search.value.length); }
+  let t = null;
+  search.addEventListener('input', (e) => { clearTimeout(t); t = setTimeout(() => { bizDir.q = e.target.value; renderBusinessDirectory(); }, 200); });
+  bodyEl.querySelectorAll('[data-dirgroup]').forEach((b) => b.onclick = () => { bizDir.group = b.dataset.dirgroup; renderBusinessDirectory(); });
+  $('#dir-print').onclick = () => { bodyEl.querySelectorAll('details').forEach((d) => d.open = true); window.print(); };
+  $('#dir-csv').onclick = downloadDirectoryCSV;
+  bodyEl.querySelectorAll('.dir-row').forEach((li) => {
+    const go = () => { const id = li.dataset.id; closeBusinessDirectory(); openDetail(id); };
+    li.onclick = go;
+    li.onkeydown = (e) => { if (e.key === 'Enter') go(); };
+  });
+}
+
+function downloadDirectoryCSV() {
+  const formal = bizDir.status === 'formal';
+  const head = formal
+    ? ['Business name', 'Owner / contact', 'Activities', 'IPA registered', 'Turnover bracket', 'Phone', 'Village', 'Ward', 'LLG', 'District', 'Household no.']
+    : ['Owner', 'Activity', 'Activity group', 'Monthly turnover (K)', 'Year started', 'Household head', 'Phone', 'Village', 'Ward', 'LLG', 'District', 'Household no.'];
+  const rows = dirFiltered().slice().sort((a, b) => dirSort(dirGroupKey(a), dirGroupKey(b)));
+  const lines = rows.map((r) => formal
+    ? [r.name, r.owner, r.actRaw, r.ipa, r.tb, r.ph, r.v, r.w, r.l, r.d, r.hh]
+    : [r.owner, r.actRaw, r.actGroup, r.turn, r.yr, r.head, r.ph, r.v, r.w, r.l, r.d, r.hh]);
+  const cell = (v) => { const s = v == null ? '' : String(v); return /[",\n]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s; };
+  const csv = '﻿' + [head, ...lines].map((l) => l.map(cell).join(',')).join('\r\n');
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(new Blob([csv], { type: 'text/csv;charset=utf-8' }));
+  a.download = `${formal ? 'Formal' : 'Informal'}-businesses-${dirScopeLabel().replace(/[^A-Za-z0-9]+/g, '-').replace(/-+$/, '')}.csv`;
+  document.body.appendChild(a); a.click(); a.remove();
+  setTimeout(() => URL.revokeObjectURL(a.href), 2000);
+}
