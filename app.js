@@ -127,7 +127,7 @@ const LLG_HOUSEHOLDS = {
   'Central Gazelle Rural': 10574, 'Inland Baining Rural': 5892, 'Lassul Baining Rural': 1959, 'Open Bay Rural': 1013,
   'Livuan Rural': 3709, 'Reimber Rural': 3401, 'Toma Rural': 3707, 'Vunadidir Rural': 3172,
   'Bitapaka Rural': 3841, 'Duke of York Rural': 3426, 'Kokopo-Vunamami Urban': 5322, 'Raluana Rural': 2960,
-  'Central Pomio Rural': 1581, 'Inland Pomio Rural': 1950, 'East Pomio Rural': 1472, 'Melkoi Rural': 2629,
+  'Central Pomio Rural': 1979, 'Inland Pomio Rural': 1950, 'East Pomio Rural': 1472, 'Melkoi Rural': 2629,
   'Sinivit Rural': 3317, 'West Pomio Rural': 2123, 'Mamusi Rural': 1997,
   'Balanataman Rural': 4837, 'Kombiu Rural': 2263, 'Rabaul Urban': 928, 'Watom Island Rural': 650
 };
